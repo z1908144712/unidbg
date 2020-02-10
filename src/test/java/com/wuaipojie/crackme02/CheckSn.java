@@ -24,6 +24,7 @@ import com.sun.jna.Pointer;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 
 public class CheckSn {
     private final ARMEmulator emulator;
@@ -32,6 +33,8 @@ public class CheckSn {
     private  final Memory memory;
 
     private final DvmClass MainActivity;
+
+    private String hash;
 
     private CheckSn() throws IOException {
         emulator = new AndroidARMEmulator("com.wuaipojie.crackme02");
@@ -61,7 +64,7 @@ public class CheckSn {
         test.destroy();
     }
 
-    private void test() {
+    private void test() throws UnsupportedEncodingException {
 
         IxHook xHook = XHookImpl.getInstance(emulator);
         xHook.register("libc.so", "strlen", new ReplaceCallback() {
@@ -99,52 +102,66 @@ public class CheckSn {
             public HookStatus onCall(Emulator emulator, long originFunction) {
                 Pointer pointer = emulator.getContext().getPointerArg(0);
                 String s = pointer.getString(0);
-                Inspector.inspect(s.getBytes(), "strlen( " +s+" )");
+                if (s.length() == 8) {
+                    hash = s;
+                }
+//                Inspector.inspect(s.getBytes(), "strlen");
                 return HookStatus.RET(emulator, originFunction);
             }
         });
-        whale.WInlineHookFunction(emulator.getMemory().findModule("libc.so").findSymbolByName("malloc"), new ReplaceCallback() {
-            @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
-                int size = emulator.getContext().getIntArg(0);
-                System.out.println("malloc=" + size);
-                return HookStatus.RET(emulator, originFunction);
-            }
-        });
-        whale.WInlineHookFunction(emulator.getMemory().findModule("libc.so").findSymbolByName("memcpy"), new ReplaceCallback() {
-            @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
-                RegisterContext context = emulator.getContext();
-                Pointer dest = context.getPointerArg(0);
-                Pointer src = context.getPointerArg(1);
-                int length = context.getIntArg(2);
-                Inspector.inspect(src.getByteArray(0, length), "memcpy dest=" + dest);
-                return HookStatus.RET(emulator, originFunction);
-            }
-        });
-        whale.WInlineHookFunction(emulator.getMemory().findModule("libc.so").findSymbolByName("realloc"), new ReplaceCallback() {
-            @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
-                RegisterContext context = emulator.getContext();
-                Pointer src = context.getPointerArg(0);
-                int length = context.getIntArg(1);
-                Inspector.inspect(src.getByteArray(0, length), "realloc");
-                return HookStatus.RET(emulator, originFunction);
-            }
-        });
+//        whale.WInlineHookFunction(emulator.getMemory().findModule("libc.so").findSymbolByName("malloc"), new ReplaceCallback() {
+//            @Override
+//            public HookStatus onCall(Emulator emulator, long originFunction) {
+//                int size = emulator.getContext().getIntArg(0);
+//                System.out.println("malloc=" + size);
+//                return HookStatus.RET(emulator, originFunction);
+//            }
+//        });
+//        whale.WInlineHookFunction(emulator.getMemory().findModule("libc.so").findSymbolByName("memcpy"), new ReplaceCallback() {
+//            @Override
+//            public HookStatus onCall(Emulator emulator, long originFunction) {
+//                RegisterContext context = emulator.getContext();
+//                Pointer dest = context.getPointerArg(0);
+//                Pointer src = context.getPointerArg(1);
+//                int length = context.getIntArg(2);
+//                Inspector.inspect(src.getByteArray(0, length), "memcpy dest=" + dest);
+//                return HookStatus.RET(emulator, originFunction);
+//            }
+//        });
+//        whale.WInlineHookFunction(emulator.getMemory().findModule("libc.so").findSymbolByName("gettimeofday"), new ReplaceCallback() {
+//            @Override
+//            public HookStatus onCall(Emulator emulator, long originFunction) {
+//                RegisterContext context = emulator.getContext();
+//                Pointer src = context.getPointerArg(0);
+//                Inspector.inspect(src.getByteArray(0, 0x20), "gettimeofday");
+//                return HookStatus.RET(emulator, originFunction);
+//            }
+//        });
 
         long start = System.currentTimeMillis();
         String input_uid = "2020206";
-        String input_flag = "52pojie2020xtian=";
+        String rc4_key = "52pojie2020xtian";
+        String input_flag = "52pojie2020xtian";
 //        emulator.attach(DebuggerType.GDB_SERVER);
 //        emulator.attach(DebuggerType.SIMPLE);
 //        File file = new File("C:\\Users\\UnknownError\\Desktop\\codes.txt");
 //        emulator.redirectTrace(file);
 //        emulator.traceCode();
-//        System.out.println("libc=" + memory.findModule("libc.so"));
-//        emulator.attach().addBreakPoint(module, 0x0001509c);
+//        System.out.println("libc=" + memory.findModule("libc.so").findSymbolByName("gettimeofday"));
+//        emulator.attach().addBreakPoint(module, 0x0001681a);
+//        emulator.attach().addBreakPoint(memory.findModule("libc.so"), "gettimeofday");
         Number ret = MainActivity.callStaticJniMethod(emulator, "checkSn(Ljava/lang/String;Ljava/lang/String;)Z", vm.addLocalObject(new StringObject(vm, input_uid)), vm.addLocalObject(new StringObject(vm, input_flag)));
-        vm.deleteLocalRefs();
         System.out.println("checkSn ret=" + ret + ", offset=" + (System.currentTimeMillis() - start) + "ms");
+        byte[] bytes = (input_uid + hash).getBytes();
+//        byte[] bytes = "0325008b4f37de1".getBytes();
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] ^= 0x20;
+        }
+        bytes = RC4.encryRC4Byte(new String(bytes), rc4_key, "utf-8");
+        bytes = Base64.encode(bytes);
+        input_flag = new String(bytes);
+        ret = MainActivity.callStaticJniMethod(emulator, "checkSn(Ljava/lang/String;Ljava/lang/String;)Z", vm.addLocalObject(new StringObject(vm, input_uid)), vm.addLocalObject(new StringObject(vm, input_flag)));
+        System.out.println("checkSn ret=" + ret + ", offset=" + (System.currentTimeMillis() - start) + "ms");
+        vm.deleteLocalRefs();
     }
 }
