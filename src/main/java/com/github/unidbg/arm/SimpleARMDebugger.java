@@ -9,8 +9,8 @@ import com.github.unidbg.pointer.UnicornPointer;
 import com.sun.jna.Pointer;
 import keystone.Keystone;
 import keystone.KeystoneArchitecture;
-import keystone.KeystoneEncoded;
 import keystone.KeystoneMode;
+import org.apache.commons.codec.DecoderException;
 import unicorn.ArmConst;
 import unicorn.Unicorn;
 import unicorn.UnicornException;
@@ -19,12 +19,12 @@ import java.util.Scanner;
 
 class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
 
-    SimpleARMDebugger(Emulator emulator, boolean softBreakpoint) {
-        super(emulator, softBreakpoint);
+    SimpleARMDebugger(Emulator<?> emulator) {
+        super(emulator);
     }
 
     @Override
-    protected final void loop(Emulator emulator, long address, int size) {
+    protected final void loop(Emulator<?> emulator, long address, int size) {
         System.out.println("debugger break at: 0x" + Long.toHexString(address));
         Unicorn u = emulator.getUnicorn();
         boolean thumb = ARM.isThumb(u);
@@ -47,6 +47,11 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
                 if ("d".equals(line) || "dis".equals(line)) {
                     emulator.showRegs();
                     disassemble(emulator, address, size, thumb);
+                    continue;
+                }
+                if (line.startsWith("d0x")) {
+                    long da = Long.parseLong(line.substring(3), 16);
+                    disassembleBlock(emulator, da & 0xfffffffeL,(da & 1) == 1);
                     continue;
                 }
                 if (line.startsWith("m")) {
@@ -109,11 +114,15 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
                         continue;
                     }
                 }
+                if ("where".equals(line)) {
+                    new Exception("here").printStackTrace(System.out);
+                    continue;
+                }
                 if (line.startsWith("w")) {
                     String command;
                     String[] tokens = line.split("\\s+");
                     if (tokens.length < 2) {
-                        System.out.println("wr0-wr7, wfp, wip, wsp <value>: write specified register");
+                        System.out.println("wr0-wr8, wfp, wip, wsp <value>: write specified register");
                         System.out.println("wb(address), ws(address), wi(address) <value>: write (byte, short, integer) memory of specified address, address must start with 0x");
                         continue;
                     }
@@ -126,7 +135,7 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
                             str = str.substring(2);
                             radix = 16;
                         }
-                        value = Integer.parseInt(str, radix);
+                        value = (int) Long.parseLong(str, radix);
                     } catch(NumberFormatException e) {
                         e.printStackTrace();
                         continue;
@@ -135,7 +144,7 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
                     int reg = -1;
                     if (command.startsWith("wr") && command.length() == 3) {
                         char c = command.charAt(2);
-                        if (c >= '0' && c <= '7') {
+                        if (c >= '0' && c <= '8') {
                             int r = c - '0';
                             reg = ArmConst.UC_ARM_REG_R0 + r;
                         }
@@ -188,9 +197,11 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
                         hasTrace = true;
                         StringBuilder sb = new StringBuilder();
                         if (module != null) {
+                            sb.append(String.format("[0x%0" + Long.toHexString(memory.getMaxSizeOfLibrary()).length() + "x]", module.base));
                             sb.append(String.format("[%" + maxLengthSoName.length() + "s]", module.name));
                             sb.append(String.format("[0x%0" + Long.toHexString(memory.getMaxSizeOfLibrary()).length() + "x]", lr.peer - module.base + (thumb ? 1 : 0)));
                         } else {
+                            sb.append(String.format("[0x%0" + Long.toHexString(memory.getMaxSizeOfLibrary()).length() + "x]", 0));
                             sb.append(String.format("[%" + maxLengthSoName.length() + "s]", "0x" + Long.toHexString(lr == null ? 0 : lr.peer)));
                             if (lr != null) {
                                 sb.append(String.format("[0x%0" + Long.toHexString(memory.getMaxSizeOfLibrary()).length() + "x]", lr.peer - 0xfffe0000L + (thumb ? 1 : 0)));
@@ -249,51 +260,29 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
                     System.out.println("Add breakpoint: 0x" + Long.toHexString(addr) + (module == null ? "" : (" in " + module.name + " [0x" + Long.toHexString(addr - module.base) + "]")));
                     continue;
                 }
-                if ("c".equals(line)) { // continue
+                if(handleCommon(u, line, address, size, nextAddress)) {
                     break;
                 }
-                if ("n".equals(line)) {
-                    if (nextAddress == 0) {
-                        System.out.println("Next address failed.");
-                        continue;
-                    } else {
-                        addBreakPoint(nextAddress);
-                        break;
-                    }
-                }
-                if ("stop".equals(line)) {
-                    u.emu_stop();
-                    break;
-                }
-                if ("s".equals(line) || "si".equals(line)) {
-                    singleStep = 1;
-                    break;
-                }
-                if (line.startsWith("s")) {
-                    try {
-                        singleStep = Integer.parseInt(line.substring(1));
-                        break;
-                    } catch (NumberFormatException e) {
-                        breakMnemonic = line.substring(1);
-                        break;
-                    }
-                }
-
-                showHelp();
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | DecoderException e) {
                 e.printStackTrace();
             }
         }
     }
 
-    private void showHelp() {
+    @Override
+    final void showHelp() {
         System.out.println("c: continue");
         System.out.println("n: step over");
         System.out.println("bt: back trace");
         System.out.println();
+        System.out.println("st hex: search stack");
+        System.out.println("shw hex: search writable heap");
+        System.out.println("shr hex: search readable heap");
+        System.out.println("shx hex: search executable heap");
+        System.out.println();
         System.out.println("s|si: step into");
         System.out.println("s[decimal]: execute specified amount instruction");
-        System.out.println("sblx: execute util BLX mnemonic");
+        System.out.println("s(blx): execute util BLX mnemonic");
         System.out.println();
         System.out.println("m(op) [size]: show memory, default size is 0x70, size may hex or decimal");
         System.out.println("mr0-mr7, mfp, mip, msp [size]: show memory of specified register");
@@ -307,16 +296,18 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
         System.out.println("r: remove breakpoint of register PC");
         System.out.println("blr: add temporarily breakpoint of register LR");
         System.out.println();
+        System.out.println("p (assembly): patch assembly at PC address");
+        System.out.println("where: show java stack trace");
+        System.out.println();
+        System.out.println("vm: view loaded modules");
+        System.out.println("vbs: view breakpoints");
         System.out.println("d|dis: show disassemble");
+        System.out.println("d(0x): show disassemble at specify address");
         System.out.println("stop: stop emulation");
     }
 
     @Override
-    protected byte[] addSoftBreakPoint(long address, int svcNumber) {
-        boolean isThumb = (address & 1) != 0;
-        try (Keystone keystone = new Keystone(KeystoneArchitecture.Arm, isThumb ? KeystoneMode.ArmThumb : KeystoneMode.Arm)) {
-            KeystoneEncoded encoded = keystone.assemble("bkpt #" + svcNumber);
-            return encoded.getMachineCode();
-        }
+    protected Keystone createKeystone(boolean isThumb) {
+        return new Keystone(KeystoneArchitecture.Arm, isThumb ? KeystoneMode.ArmThumb : KeystoneMode.Arm);
     }
 }

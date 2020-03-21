@@ -1,6 +1,9 @@
 package com.github.unidbg.ios;
 
 import com.github.unidbg.arm.AbstractARMEmulator;
+import com.github.unidbg.file.FileSystem;
+import com.github.unidbg.file.ios.DarwinFileIO;
+import com.github.unidbg.file.ios.DarwinFileSystem;
 import com.github.unidbg.memory.Memory;
 import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.UnicornPointer;
@@ -9,16 +12,32 @@ import com.github.unidbg.spi.LibraryFile;
 import com.github.unidbg.unix.UnixSyscallHandler;
 import com.sun.jna.Pointer;
 
+import java.io.File;
 import java.net.URL;
+import java.util.Collections;
 
-public class DarwinARMEmulator extends AbstractARMEmulator {
+public class DarwinARMEmulator extends AbstractARMEmulator<DarwinFileIO> {
 
     public DarwinARMEmulator() {
-        this(null);
+        this(null, null);
     }
 
+    @SuppressWarnings("unused")
     public DarwinARMEmulator(String processName) {
-        super(processName);
+        this(processName, null);
+    }
+
+    public DarwinARMEmulator(File rootDir) {
+        this(null, rootDir);
+    }
+
+    public DarwinARMEmulator(String processName, File rootDir, String... envs) {
+        super(processName, rootDir, envs);
+    }
+
+    @Override
+    protected FileSystem<DarwinFileIO> createFileSystem(File rootDir) {
+        return new DarwinFileSystem(this, rootDir);
     }
 
     @Override
@@ -57,8 +76,8 @@ public class DarwinARMEmulator extends AbstractARMEmulator {
     }
 
     @Override
-    protected Memory createMemory(UnixSyscallHandler syscallHandler) {
-        return new MachOLoader(this, syscallHandler);
+    protected Memory createMemory(UnixSyscallHandler<DarwinFileIO> syscallHandler, String[] envs) {
+        return new MachOLoader(this, syscallHandler, envs);
     }
 
     @Override
@@ -67,7 +86,7 @@ public class DarwinARMEmulator extends AbstractARMEmulator {
     }
 
     @Override
-    protected UnixSyscallHandler createSyscallHandler(SvcMemory svcMemory) {
+    protected UnixSyscallHandler<DarwinFileIO> createSyscallHandler(SvcMemory svcMemory) {
         return new ARM32SyscallHandler(svcMemory);
     }
 
@@ -83,7 +102,7 @@ public class DarwinARMEmulator extends AbstractARMEmulator {
 
     @Override
     public LibraryFile createURLibraryFile(URL url, String libName) {
-        return new URLibraryFile(url, libName, null);
+        return new URLibraryFile(url, libName, null, Collections.<String>emptyList());
     }
 
     @Override

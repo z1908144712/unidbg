@@ -1,17 +1,19 @@
 package com.github.unidbg.spi;
 
+import com.github.unidbg.*;
 import com.github.unidbg.arm.ARM;
 import com.github.unidbg.arm.ARMEmulator;
 import com.github.unidbg.file.FileIO;
+import com.github.unidbg.file.NewFileIO;
+import com.github.unidbg.file.ios.IOConstants;
 import com.github.unidbg.hook.HookListener;
 import com.github.unidbg.memory.Memory;
 import com.github.unidbg.memory.MemoryBlock;
 import com.github.unidbg.memory.MemoryMap;
 import com.github.unidbg.pointer.UnicornPointer;
+import com.github.unidbg.unix.IO;
 import com.github.unidbg.unix.UnixEmulator;
 import com.github.unidbg.unix.UnixSyscallHandler;
-import com.github.unidbg.*;
-import com.github.unidbg.unix.IO;
 import com.sun.jna.Pointer;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.logging.Log;
@@ -19,7 +21,6 @@ import org.apache.commons.logging.LogFactory;
 import unicorn.Arm64Const;
 import unicorn.ArmConst;
 import unicorn.Unicorn;
-import unicorn.WriteHook;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -27,13 +28,13 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-public abstract class AbstractLoader implements Memory, Loader {
+public abstract class AbstractLoader<T extends NewFileIO> implements Memory, Loader {
 
     private static final Log log = LogFactory.getLog(AbstractLoader.class);
 
     protected final Unicorn unicorn;
-    protected final Emulator emulator;
-    protected final UnixSyscallHandler syscallHandler;
+    protected final Emulator<T> emulator;
+    protected final UnixSyscallHandler<T> syscallHandler;
 
     protected long sp;
     protected long mmapBaseAddress;
@@ -47,7 +48,7 @@ public abstract class AbstractLoader implements Memory, Loader {
         }
     }
 
-    public AbstractLoader(Emulator emulator, UnixSyscallHandler syscallHandler) {
+    public AbstractLoader(Emulator<T> emulator, UnixSyscallHandler<T> syscallHandler) {
         this.unicorn = emulator.getUnicorn();
         this.emulator = emulator;
         this.syscallHandler = syscallHandler;
@@ -83,7 +84,7 @@ public abstract class AbstractLoader implements Memory, Loader {
             } else {
                 MemoryMap map = lastEntry.getValue();
                 long mmapAddress = map.base + map.size;
-                if (mmapAddress + length <= entry.getKey() && (mmapAddress & mask) == 0) {
+                if (mmapAddress + length < entry.getKey() && (mmapAddress & mask) == 0) {
                     return mmapAddress;
                 } else {
                     lastEntry = entry;
@@ -115,17 +116,27 @@ public abstract class AbstractLoader implements Memory, Loader {
 
         if (((flags & MAP_ANONYMOUS) != 0) || (start == 0 && fd <= 0 && offset == 0)) {
             long addr = allocateMapAddress(0, aligned);
-            log.debug("mmap2 addr=0x" + Long.toHexString(addr) + ", mmapBaseAddress=0x" + Long.toHexString(mmapBaseAddress) + ", start=" + start + ", fd=" + fd + ", offset=" + offset + ", aligned=" + aligned + ", LR=" + emulator.getContext().getLRPointer());
+            if (log.isDebugEnabled()) {
+                log.debug("mmap2 addr=0x" + Long.toHexString(addr) + ", mmapBaseAddress=0x" + Long.toHexString(mmapBaseAddress) + ", start=" + start + ", fd=" + fd + ", offset=" + offset + ", aligned=" + aligned + ", LR=" + emulator.getContext().getLRPointer());
+            }
             unicorn.mem_map(addr, aligned, prot);
-            memoryMap.put(addr, new MemoryMap(addr, aligned, prot));
+            if (memoryMap.put(addr, new MemoryMap(addr, aligned, prot)) != null) {
+                log.warn("mmap2 replace exists memory map addr=" + Long.toHexString(addr));
+            }
             return addr;
         }
         try {
             FileIO file;
             if (start == 0 && fd > 0 && (file = syscallHandler.fdMap.get(fd)) != null) {
                 long addr = allocateMapAddress(0, aligned);
-                log.debug("mmap2 addr=0x" + Long.toHexString(addr) + ", mmapBaseAddress=0x" + Long.toHexString(mmapBaseAddress));
-                return file.mmap2(unicorn, addr, aligned, prot, offset, length, memoryMap);
+                if (log.isDebugEnabled()) {
+                    log.debug("mmap2 addr=0x" + Long.toHexString(addr) + ", mmapBaseAddress=0x" + Long.toHexString(mmapBaseAddress));
+                }
+                long ret = file.mmap2(unicorn, addr, aligned, prot, offset, length);
+                if (memoryMap.put(addr, new MemoryMap(addr, aligned, prot)) != null) {
+                    log.warn("mmap2 replace exists memory map addr=0x" + Long.toHexString(addr));
+                }
+                return ret;
             }
         } catch (IOException e) {
             throw new IllegalStateException(e);
@@ -141,25 +152,32 @@ public abstract class AbstractLoader implements Memory, Loader {
         MemoryMap removed = memoryMap.remove(start);
 
         if (removed == null) {
-            Map.Entry<Long, MemoryMap> segment = null;
+            MemoryMap segment = null;
             for (Map.Entry<Long, MemoryMap> entry : memoryMap.entrySet()) {
                 MemoryMap map = entry.getValue();
                 if (start > entry.getKey() && start < map.base + map.size) {
-                    segment = entry;
+                    segment = entry.getValue();
                     break;
                 }
             }
-            if (segment == null || segment.getValue().size < aligned) {
+            if (segment == null || segment.size < aligned) {
                 throw new IllegalStateException("munmap aligned=0x" + Long.toHexString(aligned) + ", start=0x" + Long.toHexString(start));
             }
-
-            memoryMap.put(segment.getKey(), new MemoryMap(segment.getKey(), (int) (start - segment.getKey()), segment.getValue().prot));
-            log.debug("munmap aligned=0x" + Long.toHexString(aligned) + ", start=0x" + Long.toHexString(start) + ", base=0x" + Long.toHexString(segment.getKey()) + ", size=" + (start - segment.getKey()));
-            if (start + aligned < segment.getKey() + segment.getValue().size) {
-                log.debug("munmap aligned=0x" + Long.toHexString(aligned) + ", start=0x" + Long.toHexString(start) + ", base=0x" + Long.toHexString(start + aligned) + ", size=" + (segment.getKey() + segment.getValue().size - start - aligned));
-                memoryMap.put(start + aligned, new MemoryMap(start + aligned, (int) (segment.getKey() + segment.getValue().size - start - aligned), segment.getValue().prot));
+            if (start + aligned < segment.base + segment.size) {
+                long newSize = segment.base + segment.size - start - aligned;
+                if (log.isDebugEnabled()) {
+                    log.debug("munmap aligned=0x" + Long.toHexString(aligned) + ", start=0x" + Long.toHexString(start) + ", base=0x" + Long.toHexString(start + aligned) + ", size=" + newSize);
+                }
+                if (memoryMap.put(start + aligned, new MemoryMap(start + aligned, (int) newSize, segment.prot)) != null) {
+                    log.warn("munmap replace exists memory map addr=0x" + Long.toHexString(start + aligned));
+                }
             }
-
+            if (memoryMap.put(segment.base, new MemoryMap(segment.base, (int) (start - segment.base), segment.prot)) == null) {
+                log.warn("munmap replace failed warning: addr=0x" + Long.toHexString(segment.base));
+            }
+            if (log.isDebugEnabled()) {
+                log.debug("munmap aligned=0x" + Long.toHexString(aligned) + ", start=0x" + Long.toHexString(start) + ", base=0x" + Long.toHexString(segment.base) + ", size=" + (start - segment.base));
+            }
             return 0;
         }
 
@@ -168,11 +186,18 @@ public abstract class AbstractLoader implements Memory, Loader {
                 throw new IllegalStateException("munmap removed=0x" + Long.toHexString(removed.size) + ", aligned=0x" + Long.toHexString(aligned) + ", start=0x" + Long.toHexString(start));
             }
 
-            memoryMap.put(start + aligned, new MemoryMap(start + aligned, removed.size - aligned, removed.prot));
-            log.debug("munmap removed=0x" + Long.toHexString(removed.size) + ", aligned=0x" + Long.toHexString(aligned) + ", base=0x" + Long.toHexString(start + aligned) + ", size=" + (removed.size - aligned));
+            if (memoryMap.put(start + aligned, new MemoryMap(start + aligned, removed.size - aligned, removed.prot)) != null) {
+                log.warn("munmap replace exists memory map addr=0x" + Long.toHexString(start + aligned));
+            }
+            if (log.isDebugEnabled()) {
+                log.debug("munmap removed=0x" + Long.toHexString(removed.size) + ", aligned=0x" + Long.toHexString(aligned) + ", base=0x" + Long.toHexString(start + aligned) + ", size=" + (removed.size - aligned));
+            }
             return 0;
         }
 
+        if (log.isDebugEnabled()) {
+            log.debug("munmap aligned=0x" + Long.toHexString(aligned) + ", start=0x" + Long.toHexString(start) + ", base=0x" + Long.toHexString(removed.base) + ", size=" + removed.size);
+        }
         if (memoryMap.isEmpty()) {
             setMMapBaseAddress(MMAP_BASE);
         }
@@ -202,17 +227,17 @@ public abstract class AbstractLoader implements Memory, Loader {
 
     @Override
     public final Module load(File elfFile, boolean forceCallInit) throws IOException {
-        return loadInternal(createLibraryFile(elfFile), null, forceCallInit);
+        return loadInternal(createLibraryFile(elfFile), forceCallInit);
     }
 
     protected abstract LibraryFile createLibraryFile(File file);
 
     @Override
     public final Module load(LibraryFile libraryFile, boolean forceCallInit) throws IOException {
-        return loadInternal(libraryFile, null, forceCallInit);
+        return loadInternal(libraryFile, forceCallInit);
     }
 
-    protected abstract Module loadInternal(LibraryFile libraryFile, WriteHook unpackHook, boolean forceCallInit) throws IOException;
+    protected abstract Module loadInternal(LibraryFile libraryFile, boolean forceCallInit) throws IOException;
 
     protected boolean callInitFunction;
 
@@ -231,17 +256,15 @@ public abstract class AbstractLoader implements Memory, Loader {
     protected LibraryResolver libraryResolver;
 
     @Override
-    public final void setLibraryResolver(LibraryResolver libraryResolver) {
+    public void setLibraryResolver(LibraryResolver libraryResolver) {
         this.libraryResolver = libraryResolver;
-
-        syscallHandler.addIOResolver(libraryResolver);
 
         /*
          * 注意打开顺序很重要
          */
-        syscallHandler.open(emulator, IO.STDIN, FileIO.O_RDONLY);
-        syscallHandler.open(emulator, IO.STDOUT, FileIO.O_WRONLY);
-        syscallHandler.open(emulator, IO.STDERR, FileIO.O_WRONLY);
+        syscallHandler.open(emulator, IO.STDIN, IOConstants.O_RDONLY);
+        syscallHandler.open(emulator, IO.STDOUT, IOConstants.O_WRONLY);
+        syscallHandler.open(emulator, IO.STDERR, IOConstants.O_WRONLY);
     }
 
     @Override
@@ -272,10 +295,26 @@ public abstract class AbstractLoader implements Memory, Loader {
         return UnicornPointer.pointer(emulator, address);
     }
 
+    private long stackBase;
+    protected int stackSize;
+
+    @Override
+    public long getStackBase() {
+        return stackBase;
+    }
+
+    @Override
+    public int getStackSize() {
+        return stackSize;
+    }
+
     @Override
     public final void setStackPoint(long sp) {
+        if (this.sp == 0) {
+            this.stackBase = sp;
+        }
         this.sp = sp;
-        if (emulator.getPointerSize() == 4) {
+        if (emulator.is32Bit()) {
             unicorn.reg_write(ArmConst.UC_ARM_REG_SP, sp);
         } else {
             unicorn.reg_write(Arm64Const.UC_ARM64_REG_SP, sp);
@@ -287,16 +326,22 @@ public abstract class AbstractLoader implements Memory, Loader {
         return sp;
     }
 
-    protected ModuleListener moduleListener;
+    protected final List<ModuleListener> moduleListeners = new ArrayList<>();
 
     @Override
-    public final void setModuleListener(ModuleListener listener) {
-        moduleListener = listener;
+    public final void addModuleListener(ModuleListener listener) {
+        moduleListeners.add(listener);
+    }
+
+    protected final void notifyModuleLoaded(Module module) {
+        for (ModuleListener listener : moduleListeners) {
+            listener.onLoaded(emulator, module);
+        }
     }
 
     @Override
     public final File dumpStack() throws IOException {
-        UnicornPointer sp = UnicornPointer.register(emulator, emulator.getPointerSize() == 4 ? ArmConst.UC_ARM_REG_SP : Arm64Const.UC_ARM64_REG_SP);
+        UnicornPointer sp = UnicornPointer.register(emulator, emulator.is32Bit() ? ArmConst.UC_ARM_REG_SP : Arm64Const.UC_ARM64_REG_SP);
         File outFile = File.createTempFile("stack_0x" + Long.toHexString(sp.peer) + "_", ".dat");
         dump(sp, STACK_BASE - sp.peer, outFile);
         return outFile;
@@ -330,10 +375,14 @@ public abstract class AbstractLoader implements Memory, Loader {
     protected final Alignment mem_map(long address, long size, int prot, String libraryName) {
         Alignment alignment = emulator.align(address, size);
 
-        log.debug("[" + libraryName + "]0x" + Long.toHexString(alignment.address) + " - 0x" + Long.toHexString(alignment.address + alignment.size) + ", size=0x" + Long.toHexString(alignment.size));
+        if (log.isDebugEnabled()) {
+            log.debug("[" + libraryName + "]0x" + Long.toHexString(alignment.address) + " - 0x" + Long.toHexString(alignment.address + alignment.size) + ", size=0x" + Long.toHexString(alignment.size) + ", prot=" + prot);
+        }
 
         unicorn.mem_map(alignment.address, alignment.size, prot);
-        memoryMap.put(alignment.address, new MemoryMap(alignment.address, (int) alignment.size, prot));
+        if (memoryMap.put(alignment.address, new MemoryMap(alignment.address, (int) alignment.size, prot)) != null) {
+            log.warn("mem_map replace exists memory map address=" + Long.toHexString(alignment.address));
+        }
         return alignment;
     }
 

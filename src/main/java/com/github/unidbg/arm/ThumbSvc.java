@@ -1,5 +1,6 @@
 package com.github.unidbg.arm;
 
+import com.github.unidbg.Emulator;
 import com.github.unidbg.Svc;
 import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.UnicornPointer;
@@ -14,6 +15,10 @@ public abstract class ThumbSvc implements Svc {
         }
 
         return ArmSvc.register(svcMemory, svcNumber, KeystoneMode.ArmThumb);
+    }
+
+    @Override
+    public void handleCallback(Emulator<?> emulator) {
     }
 
 }

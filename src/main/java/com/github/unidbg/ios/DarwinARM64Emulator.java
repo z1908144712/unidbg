@@ -1,6 +1,9 @@
 package com.github.unidbg.ios;
 
 import com.github.unidbg.arm.AbstractARM64Emulator;
+import com.github.unidbg.file.FileSystem;
+import com.github.unidbg.file.ios.DarwinFileIO;
+import com.github.unidbg.file.ios.DarwinFileSystem;
 import com.github.unidbg.memory.Memory;
 import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.UnicornPointer;
@@ -14,19 +17,35 @@ import keystone.KeystoneEncoded;
 import keystone.KeystoneMode;
 import unicorn.UnicornConst;
 
+import java.io.File;
 import java.net.URL;
 import java.nio.ByteBuffer;
+import java.util.Collections;
 
-public class DarwinARM64Emulator extends AbstractARM64Emulator {
+public class DarwinARM64Emulator extends AbstractARM64Emulator<DarwinFileIO> {
 
     public DarwinARM64Emulator() {
-        this(null);
+        this(null, null);
     }
 
+    @SuppressWarnings("unused")
     public DarwinARM64Emulator(String processName) {
-        super(processName);
+        this(processName, null);
+    }
+
+    public DarwinARM64Emulator(File rootDir) {
+        this(null, rootDir);
+    }
+
+    public DarwinARM64Emulator(String processName, File rootDir, String... envs) {
+        super(processName, rootDir, envs);
 
         setupTraps();
+    }
+
+    @Override
+    protected FileSystem<DarwinFileIO> createFileSystem(File rootDir) {
+        return new DarwinFileSystem(this, rootDir);
     }
 
     private void setupTraps() {
@@ -73,8 +92,8 @@ public class DarwinARM64Emulator extends AbstractARM64Emulator {
     }
 
     @Override
-    protected Memory createMemory(UnixSyscallHandler syscallHandler) {
-        return new MachOLoader(this, syscallHandler);
+    protected Memory createMemory(UnixSyscallHandler<DarwinFileIO> syscallHandler, String[] envs) {
+        return new MachOLoader(this, syscallHandler, envs);
     }
 
     @Override
@@ -83,7 +102,7 @@ public class DarwinARM64Emulator extends AbstractARM64Emulator {
     }
 
     @Override
-    protected UnixSyscallHandler createSyscallHandler(SvcMemory svcMemory) {
+    protected UnixSyscallHandler<DarwinFileIO> createSyscallHandler(SvcMemory svcMemory) {
         return new ARM64SyscallHandler(svcMemory);
     }
 
@@ -99,7 +118,7 @@ public class DarwinARM64Emulator extends AbstractARM64Emulator {
 
     @Override
     public LibraryFile createURLibraryFile(URL url, String libName) {
-        return new URLibraryFile(url, libName, null);
+        return new URLibraryFile(url, libName, null, Collections.<String>emptyList());
     }
 
     @Override

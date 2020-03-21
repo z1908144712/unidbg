@@ -2,10 +2,13 @@ package com.github.unidbg.unix;
 
 import com.github.unidbg.Emulator;
 import com.github.unidbg.Module;
+import com.github.unidbg.debugger.Breaker;
 import com.github.unidbg.file.FileIO;
+import com.github.unidbg.file.FileResult;
 import com.github.unidbg.file.IOResolver;
+import com.github.unidbg.file.NewFileIO;
+import com.github.unidbg.file.linux.AndroidFileIO;
 import com.github.unidbg.linux.LinuxThread;
-import com.github.unidbg.linux.file.*;
 import com.github.unidbg.memory.MemRegion;
 import com.github.unidbg.spi.SyscallHandler;
 import com.github.unidbg.unix.struct.TimeVal32;
@@ -13,24 +16,45 @@ import com.github.unidbg.unix.struct.TimeVal64;
 import com.github.unidbg.unix.struct.TimeZone;
 import com.github.unidbg.utils.Inspector;
 import com.sun.jna.Pointer;
-import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
-public abstract class UnixSyscallHandler implements SyscallHandler {
+public abstract class UnixSyscallHandler<T extends NewFileIO> implements SyscallHandler<T> {
 
     private static final Log log = LogFactory.getLog(UnixSyscallHandler.class);
 
-    private final List<IOResolver> resolvers = new ArrayList<>(5);
+    private final List<IOResolver<T>> resolvers = new ArrayList<>(5);
 
-    public final Map<Integer, FileIO> fdMap = new TreeMap<>();
+    public final Map<Integer, T> fdMap = new TreeMap<>();
 
     public final Map<Integer, LinuxThread> threadMap = new HashMap<>(5);
     public int lastThread = -1;
+
+    protected boolean verbose;
+
+    @Override
+    public void setVerbose(boolean verbose) {
+        this.verbose = verbose;
+    }
+
+    @Override
+    public boolean isVerbose() {
+        return verbose;
+    }
+
+    private Breaker breaker;
+
+    @Override
+    public void setBreaker(Breaker breaker) {
+        this.breaker = breaker;
+    }
+
+    protected final Breaker createBreaker(Emulator<?> emulator) {
+        return breaker != null ? breaker : emulator.attach();
+    }
 
     protected final int getMinFd() {
         int last_fd = -1;
@@ -45,25 +69,38 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
     }
 
     @Override
-    public void addIOResolver(IOResolver resolver) {
+    public void addIOResolver(IOResolver<T> resolver) {
         if (!resolvers.contains(resolver)) {
             resolvers.add(0, resolver);
         }
     }
 
-    protected final FileIO resolve(Emulator emulator, String pathname, int oflags) {
-        for (IOResolver resolver : resolvers) {
-            FileIO io = resolver.resolve(emulator, emulator.getWorkDir(), pathname, oflags);
-            if (io != null) {
-                return io;
+    protected final FileResult<T> resolve(Emulator<T> emulator, String pathname, int oflags) {
+        FileResult<T> failResult = null;
+        for (IOResolver<T> resolver : resolvers) {
+            FileResult<T> result = resolver.resolve(emulator, pathname, oflags);
+            if (result != null && result.isSuccess()) {
+                emulator.getMemory().setErrno(0);
+                return result;
+            } else if (result != null) {
+                if (failResult == null || !failResult.isFallback()) {
+                    failResult = result;
+                }
             }
         }
+        FileResult<T> result = emulator.getFileSystem().open(pathname, oflags);
+        if (result != null && result.isSuccess()) {
+            emulator.getMemory().setErrno(0);
+            return result;
+        }
+
         if (pathname.endsWith(emulator.getLibraryExtension())) {
             for (Module module : emulator.getMemory().getLoadedModules()) {
                 for (MemRegion memRegion : module.getRegions()) {
                     if (pathname.equals(memRegion.getName())) {
                         try {
-                            return new ByteArrayFileIO(oflags, pathname, memRegion.readLibrary());
+                            emulator.getMemory().setErrno(0);
+                            return FileResult.success(createByteArrayFileIO(pathname, oflags, memRegion.readLibrary()));
                         } catch (IOException e) {
                             throw new IllegalStateException(e);
                         }
@@ -71,11 +108,14 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
                 }
             }
         }
-        if ("/tmp".equals(pathname) || "/tmp/".equals(pathname)) {
-            return new DirectoryFileIO(oflags, pathname);
+
+        if (failResult != null && failResult.isFallback()) {
+            return FileResult.success(failResult.io);
         }
-        return null;
+        return failResult;
     }
+
+    protected abstract T createByteArrayFileIO(String pathname, int oflags, byte[] data);
 
     protected int gettimeofday(Pointer tv, Pointer tz) {
         if (log.isDebugEnabled()) {
@@ -161,7 +201,7 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
         return 0;
     }
 
-    protected final int sigprocmask(Emulator emulator, int how, Pointer set, Pointer oldset) {
+    protected final int sigprocmask(Emulator<?> emulator, int how, Pointer set, Pointer oldset) {
         if (log.isDebugEnabled()) {
             log.debug("sigprocmask how=" + how + ", set=" + set + ", oldset=" + oldset);
         }
@@ -169,7 +209,7 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
         return -1;
     }
 
-    protected final int read(Emulator emulator, int fd, Pointer buffer, int count) {
+    protected final int read(Emulator<?> emulator, int fd, Pointer buffer, int count) {
         if (log.isDebugEnabled()) {
             log.debug("read fd=" + fd + ", buffer=" + buffer + ", count=" + count + ", from=" + emulator.getContext().getLRPointer());
         }
@@ -179,54 +219,71 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
             emulator.getMemory().setErrno(UnixEmulator.EBADF);
             return -1;
         }
-        return file.read(emulator.getUnicorn(), buffer, count);
+        int read = file.read(emulator.getUnicorn(), buffer, count);
+        if (verbose) {
+            System.out.println(String.format("Read %d bytes from '%s'", read, file));
+        }
+        return read;
+    }
+
+    protected final int close(Emulator<?> emulator, int fd) {
+        FileIO file = fdMap.remove(fd);
+        if (file != null) {
+            file.close();
+            if (verbose) {
+                System.out.println(String.format("File closed '%s'", file));
+            }
+            return 0;
+        } else {
+            emulator.getMemory().setErrno(UnixEmulator.EBADF);
+            return -1;
+        }
     }
 
     @Override
-    public final int open(Emulator emulator, String pathname, int oflags) {
+    public final int open(Emulator<T> emulator, String pathname, int oflags) {
         int minFd = this.getMinFd();
 
-        FileIO io = resolve(emulator, pathname, oflags);
-        if (io != null) {
-            this.fdMap.put(minFd, io);
+        FileResult<T> resolveResult = resolve(emulator, pathname, oflags);
+        if (resolveResult != null && resolveResult.isSuccess()) {
+            emulator.getMemory().setErrno(0);
+            this.fdMap.put(minFd, resolveResult.io);
+            if (verbose) {
+                System.out.println(String.format("File opened '%s'", resolveResult.io));
+            }
             return minFd;
         }
 
-        if ("/dev/tty".equals(pathname)) {
-            io = new NullFileIO(pathname);
-            this.fdMap.put(minFd, io);
+        FileResult<T> result = emulator.getFileSystem().open(pathname, oflags);
+        if (result != null && result.isSuccess()) {
+            emulator.getMemory().setErrno(0);
+            this.fdMap.put(minFd, result.io);
+            if (verbose) {
+                System.out.println(String.format("File opened '%s'", result.io));
+            }
             return minFd;
         }
 
-        if ("/proc/self/maps".equals(pathname) || ("/proc/" + emulator.getPid() + "/maps").equals(pathname)) {
-            io = new MapsFileIO(oflags, pathname, emulator.getMemory().getLoadedModules());
-            this.fdMap.put(minFd, io);
-            return minFd;
-        }
-        FileIO driverIO = DriverFileIO.create(emulator, oflags, pathname);
+        T driverIO = createDriverFileIO(emulator, oflags, pathname);
         if (driverIO != null) {
+            emulator.getMemory().setErrno(0);
             this.fdMap.put(minFd, driverIO);
-            return minFd;
-        }
-        if (IO.STDIN.equals(pathname)) {
-            io = new Stdin(oflags);
-            this.fdMap.put(minFd, io);
-            return minFd;
-        }
-
-        String fileName = FilenameUtils.getName(pathname);
-        String dir = FilenameUtils.getFullPath(pathname);
-        if ("/tmp/".equals(dir)) {
-            io = new SimpleFileIO(oflags, new File("target", fileName), pathname);
-            this.fdMap.put(minFd, io);
+            if (verbose) {
+                System.out.println(String.format("File opened '%s'", driverIO));
+            }
             return minFd;
         }
 
-        emulator.getMemory().setErrno(UnixEmulator.EACCES);
+        if (resolveResult != null) {
+            result = resolveResult;
+        }
+        emulator.getMemory().setErrno(result != null ? result.errno : UnixEmulator.EACCES);
         return -1;
     }
 
-    protected int fcntl(Emulator emulator, int fd, int cmd, long arg) {
+    protected abstract T createDriverFileIO(Emulator<?> emulator, int oflags, String pathname);
+
+    protected int fcntl(Emulator<?> emulator, int fd, int cmd, long arg) {
         if (log.isDebugEnabled()) {
             log.debug("fcntl fd=" + fd + ", cmd=" + cmd + ", arg=" + arg);
         }
@@ -236,7 +293,15 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
             emulator.getMemory().setErrno(UnixEmulator.EBADF);
             return -1;
         }
-        return file.fcntl(cmd, arg);
+        return file.fcntl(emulator, cmd, arg);
+    }
+
+    protected int readlink(Emulator<?> emulator, String path, Pointer buf, int bufSize) {
+        if (log.isDebugEnabled()) {
+            log.debug("readlink path=" + path + ", buf=" + buf + ", bufSize=" + bufSize);
+        }
+        buf.setString(0, path);
+        return path.length() + 1;
     }
 
     private final Map<Integer, byte[]> sigMap = new HashMap<>();
@@ -245,16 +310,22 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
     private static final int SIGINT = 2;
     private static final int SIGQUIT = 3;
     private static final int SIGILL = 4;
+    private static final int SIGTRAP = 5; /* Trace trap (POSIX).  */
     private static final int SIGABRT = 6;
+    private static final int SIGBUS = 7; /* BUS error (4.2 BSD).  */
+    private static final int SIGFPE = 8; /* Floating-point exception (ANSI).  */
     private static final int SIGSEGV = 11;
+    private static final int SIGUSR2 = 12;
     private static final int SIGPIPE = 13;
     private static final int SIGALRM = 14;
     private static final int SIGTERM = 15;
-    private static final int SIGCHLD = 17;
+    protected static final int SIGCHLD = 17;
     private static final int SIGTSTP = 20;
     private static final int SIGTTIN = 21;
     private static final int SIGTTOU = 22;
     private static final int SIGWINCH = 28;
+    private static final int SIGSYS = 31; /* Bad system call.  */
+    private static final int SIGRTMIN = 32;
 
     protected final int sigaction(int signum, Pointer act, Pointer oldact) {
         String prefix = "Unknown";
@@ -278,8 +349,12 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
             case SIGINT:
             case SIGQUIT:
             case SIGILL:
+            case SIGTRAP:
             case SIGABRT:
+            case SIGBUS:
+            case SIGFPE:
             case SIGSEGV:
+            case SIGUSR2:
             case SIGPIPE:
             case SIGALRM:
             case SIGTERM:
@@ -288,6 +363,8 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
             case SIGTTIN:
             case SIGTTOU:
             case SIGWINCH:
+            case SIGSYS:
+            case SIGRTMIN:
                 if (act != null) {
                     sigMap.put(signum, act.getByteArray(0, ACT_SIZE));
                 }
@@ -297,7 +374,34 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
         throw new UnsupportedOperationException("signum=" + signum);
     }
 
-    protected final int connect(Emulator emulator, int sockfd, Pointer addr, int addrlen) {
+    protected final int bind(Emulator<?> emulator, int sockfd, Pointer addr, int addrlen) {
+        if (log.isDebugEnabled()) {
+            byte[] data = addr.getByteArray(0, addrlen);
+            Inspector.inspect(data, "bind sockfd=" + sockfd + ", addr=" + addr + ", addrlen=" + addrlen);
+        }
+
+        FileIO file = fdMap.get(sockfd);
+        if (file == null) {
+            emulator.getMemory().setErrno(UnixEmulator.EBADF);
+            return -1;
+        }
+        return file.bind(addr, addrlen);
+    }
+
+    protected final int listen(Emulator<AndroidFileIO> emulator, int sockfd, int backlog) {
+        if (log.isDebugEnabled()) {
+            log.debug("listen sockfd=" + sockfd + ", backlog=" + backlog);
+        }
+
+        FileIO file = fdMap.get(sockfd);
+        if (file == null) {
+            emulator.getMemory().setErrno(UnixEmulator.EBADF);
+            return -1;
+        }
+        return file.listen(backlog);
+    }
+
+    protected final int connect(Emulator<?> emulator, int sockfd, Pointer addr, int addrlen) {
         if (log.isDebugEnabled()) {
             byte[] data = addr.getByteArray(0, addrlen);
             Inspector.inspect(data, "connect sockfd=" + sockfd + ", addr=" + addr + ", addrlen=" + addrlen);
@@ -311,7 +415,7 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
         return file.connect(addr, addrlen);
     }
 
-    protected final int sendto(Emulator emulator, int sockfd, Pointer buf, int len, int flags, Pointer dest_addr, int addrlen) {
+    protected final int sendto(Emulator<?> emulator, int sockfd, Pointer buf, int len, int flags, Pointer dest_addr, int addrlen) {
         byte[] data = buf.getByteArray(0, len);
         if (log.isDebugEnabled()) {
             Inspector.inspect(data, "sendto sockfd=" + sockfd + ", buf=" + buf + ", flags=" + flags + ", dest_addr=" + dest_addr + ", addrlen=" + addrlen);
@@ -324,23 +428,7 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
         return file.sendto(data, flags, dest_addr, addrlen);
     }
 
-    protected int fstat(Emulator emulator, int fd, Pointer stat) {
-        FileIO file = fdMap.get(fd);
-        if (file == null) {
-            if (log.isDebugEnabled()) {
-                log.debug("fstat fd=" + fd + ", stat=" + stat + ", errno=" + UnixEmulator.EBADF);
-            }
-
-            emulator.getMemory().setErrno(UnixEmulator.EBADF);
-            return -1;
-        }
-        if (log.isDebugEnabled()) {
-            log.debug("fstat file=" + file + ", stat=" + stat + ", from=" + emulator.getContext().getLRPointer());
-        }
-        return file.fstat(emulator, emulator.getUnicorn(), stat);
-    }
-
-    protected final int write(Emulator emulator, int fd, Pointer buffer, int count) {
+    protected final int write(Emulator<?> emulator, int fd, Pointer buffer, int count) {
         byte[] data = buffer.getByteArray(0, count);
         if (log.isDebugEnabled()) {
             Inspector.inspect(data, "write fd=" + fd + ", buffer=" + buffer + ", count=" + count);
@@ -351,21 +439,15 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
             emulator.getMemory().setErrno(UnixEmulator.EBADF);
             return -1;
         }
-        return file.write(data);
-    }
-
-    protected int stat64(Emulator emulator, String pathname, Pointer statbuf) {
-        FileIO io = resolve(emulator, pathname, FileIO.O_RDONLY);
-        if (io != null) {
-            return io.fstat(emulator, emulator.getUnicorn(), statbuf);
+        int write = file.write(data);
+        if (verbose) {
+            System.out.println(String.format("Write %d bytes to '%s'", write, file));
         }
-
-        log.info("stat64 pathname=" + pathname);
-        emulator.getMemory().setErrno(UnixEmulator.EACCES);
-        return -1;
+        return write;
     }
 
-    protected boolean handleSyscall(Emulator emulator, int NR) {
+    @SuppressWarnings("unused")
+    protected boolean handleSyscall(Emulator<?> emulator, int NR) {
         return false;
     }
 
@@ -373,15 +455,8 @@ public abstract class UnixSyscallHandler implements SyscallHandler {
      * handle unknown syscall
      * @param NR syscall number
      */
-    protected boolean handleUnknownSyscall(Emulator emulator, int NR) {
+    protected boolean handleUnknownSyscall(Emulator<?> emulator, int NR) {
         return false;
-    }
-
-    /**
-     * create AF_UNIX local SOCK_STREAM
-     */
-    protected FileIO createLocalSocketIO(Emulator emulator, int sdk) {
-        return new LocalSocketIO(emulator, sdk);
     }
 
 }

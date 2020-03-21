@@ -7,17 +7,18 @@ import com.sun.jna.Pointer;
 
 public class MemoryAllocBlock implements MemoryBlock {
 
-    public static MemoryBlock malloc(Emulator emulator, Symbol malloc, Symbol free, int length) {
-        long address = malloc.call(emulator, length)[0].intValue() & 0xffffffffL;
+    public static MemoryBlock malloc(Emulator<?> emulator, Symbol malloc, Symbol free, int length) {
+        Number number = malloc.call(emulator, length)[0];
+        long address = emulator.is64Bit() ? number.longValue() : number.intValue() & 0xffffffffL;
         final UnicornPointer pointer = UnicornPointer.pointer(emulator, address);
         return new MemoryAllocBlock(pointer, emulator, free);
     }
 
     private final UnicornPointer pointer;
-    private final Emulator emulator;
+    private final Emulator<?> emulator;
     private final Symbol free;
 
-    private MemoryAllocBlock(UnicornPointer pointer, Emulator emulator, Symbol free) {
+    private MemoryAllocBlock(UnicornPointer pointer, Emulator<?> emulator, Symbol free) {
         this.pointer = pointer;
         this.emulator = emulator;
         this.free = free;

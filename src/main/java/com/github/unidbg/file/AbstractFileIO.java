@@ -1,16 +1,15 @@
 package com.github.unidbg.file;
 
 import com.github.unidbg.Emulator;
-import com.github.unidbg.ios.struct.kernel.StatFS;
-import com.github.unidbg.memory.MemoryMap;
+import com.github.unidbg.file.linux.AndroidFileIO;
+import com.github.unidbg.file.linux.IOConstants;
 import com.github.unidbg.utils.Inspector;
 import com.sun.jna.Pointer;
 import unicorn.Unicorn;
 
 import java.io.IOException;
-import java.util.Map;
 
-public abstract class AbstractFileIO implements FileIO {
+public abstract class AbstractFileIO implements NewFileIO {
 
     private static final int F_GETFD = 1; /* get file descriptor flags */
     private static final int F_SETFD = 2; /* set file descriptor flags */
@@ -30,11 +29,11 @@ public abstract class AbstractFileIO implements FileIO {
     }
 
     protected boolean isAppendMode() {
-        return (oflags & O_APPEND) != 0;
+        return (oflags & IOConstants.O_APPEND) != 0;
     }
 
     @Override
-    public int fcntl(int cmd, long arg) {
+    public int fcntl(Emulator<?> emulator, int cmd, long arg) {
         switch (cmd) {
             case F_GETFD:
                 return op;
@@ -47,14 +46,14 @@ public abstract class AbstractFileIO implements FileIO {
             case F_GETFL:
                 return oflags;
             case F_SETFL:
-                if ((O_APPEND & arg) != 0) {
-                    oflags |= O_APPEND;
+                if ((IOConstants.O_APPEND & arg) != 0) {
+                    oflags |= IOConstants.O_APPEND;
                 }
-                if ((O_RDWR & arg) != 0) {
-                    oflags |= O_RDWR;
+                if ((IOConstants.O_RDWR & arg) != 0) {
+                    oflags |= IOConstants.O_RDWR;
                 }
-                if ((O_NONBLOCK & arg) != 0) {
-                    oflags |= O_NONBLOCK;
+                if ((IOConstants.O_NONBLOCK & arg) != 0) {
+                    oflags |= IOConstants.O_NONBLOCK;
                 }
                 return 0;
             case F_SETLK:
@@ -62,12 +61,22 @@ public abstract class AbstractFileIO implements FileIO {
             case F_ADDFILESIGS:
                 return 0;
         }
-        throw new UnsupportedOperationException(getClass().getName() + ", cmd=" + cmd + ", arg=0x" + Long.toHexString(arg & 0xffffffffL));
+        throw new UnsupportedOperationException(getClass().getName() + ", cmd=" + cmd + ", arg=0x" + Long.toHexString(arg & 0xffffffffL) + ", this=" + this);
     }
 
     @Override
-    public int ioctl(Emulator emulator, long request, long argp) {
+    public int ioctl(Emulator<?> emulator, long request, long argp) {
         throw new AbstractMethodError(getClass().getName() + ": request=0x" + Long.toHexString(request) + ", argp=0x" + Long.toHexString(argp));
+    }
+
+    @Override
+    public int bind(Pointer addr, int addrlen) {
+        throw new AbstractMethodError(getClass().getName());
+    }
+
+    @Override
+    public int listen(int backlog) {
+        throw new AbstractMethodError(getClass().getName());
     }
 
     @Override
@@ -107,7 +116,7 @@ public abstract class AbstractFileIO implements FileIO {
 
     @Override
     public int ftruncate(int length) {
-        throw new AbstractMethodError();
+        throw new AbstractMethodError(getClass().getName());
     }
 
     @Override
@@ -121,10 +130,9 @@ public abstract class AbstractFileIO implements FileIO {
     }
 
     @Override
-    public final long mmap2(Unicorn unicorn, long addr, int aligned, int prot, int offset, int length, Map<Long, MemoryMap> memoryMap) throws IOException {
+    public final long mmap2(Unicorn unicorn, long addr, int aligned, int prot, int offset, int length) throws IOException {
         byte[] data = getMmapData(offset, length);
         unicorn.mem_map(addr, aligned, prot);
-        memoryMap.put(addr, new MemoryMap(addr, aligned, prot));
         unicorn.mem_write(addr, data);
         return addr;
     }
@@ -134,12 +142,7 @@ public abstract class AbstractFileIO implements FileIO {
     }
 
     @Override
-    public int llseek(long offset_high, long offset_low, Pointer result, int whence) {
-        throw new AbstractMethodError();
-    }
-
-    @Override
-    public int getdents64(Pointer dirp, int count) {
+    public int llseek(long offset, Pointer result, int whence) {
         throw new AbstractMethodError();
     }
 
@@ -155,21 +158,6 @@ public abstract class AbstractFileIO implements FileIO {
 
     @Override
     public int read(Unicorn unicorn, Pointer buffer, int count) {
-        throw new AbstractMethodError();
-    }
-
-    @Override
-    public int fstat(Emulator emulator, Unicorn unicorn, Pointer stat) {
-        throw new AbstractMethodError(getClass().getName());
-    }
-
-    @Override
-    public int fstat(Emulator emulator, StatStructure stat) {
-        throw new AbstractMethodError(getClass().getName());
-    }
-
-    @Override
-    public int fstatfs(StatFS statFS) {
         throw new AbstractMethodError(getClass().getName());
     }
 
@@ -182,4 +170,9 @@ public abstract class AbstractFileIO implements FileIO {
     public String getPath() {
         throw new AbstractMethodError(getClass().getName());
     }
+
+    public AndroidFileIO accept(Pointer addr, Pointer addrlen) {
+        throw new AbstractMethodError(getClass().getName());
+    }
+
 }

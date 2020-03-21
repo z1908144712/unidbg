@@ -23,11 +23,16 @@ public class ElfLibraryFile implements LibraryFile {
 
     @Override
     public String getMapRegionName() {
-        return "/system/lib/" + getName();
+        String name = getName();
+        if (name.endsWith(".so")) {
+            return "/system/lib/" + name;
+        } else {
+            return "/system/bin/" + name;
+        }
     }
 
     @Override
-    public LibraryFile resolveLibrary(Emulator emulator, String soName) {
+    public LibraryFile resolveLibrary(Emulator<?> emulator, String soName) {
         File file = new File(elfFile.getParentFile(), soName);
         return file.canRead() ? new ElfLibraryFile(file) : null;
     }

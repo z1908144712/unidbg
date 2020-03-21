@@ -1,12 +1,12 @@
 package com.github.unidbg.linux;
 
 import com.github.unidbg.*;
-import com.github.unidbg.linux.android.dvm.Hashable;
 import com.github.unidbg.memory.MemRegion;
 import com.github.unidbg.memory.Memory;
 import com.github.unidbg.pointer.UnicornPointer;
 import com.github.unidbg.spi.InitFunction;
 import com.github.unidbg.utils.Inspector;
+import com.github.unidbg.virtualmodule.VirtualSymbol;
 import com.sun.jna.Pointer;
 import net.fornwall.jelf.ElfSymbol;
 import net.fornwall.jelf.SymbolLocator;
@@ -20,7 +20,7 @@ public class LinuxModule extends Module {
 
     private static final Log log = LogFactory.getLog(LinuxModule.class);
 
-    static LinuxModule createVirtualModule(String name, final Map<String, UnicornPointer> symbols, Emulator emulator) {
+    static LinuxModule createVirtualModule(String name, final Map<String, UnicornPointer> symbols, Emulator<?> emulator) {
         if (symbols.isEmpty()) {
             throw new IllegalArgumentException("symbols is empty");
         }
@@ -49,7 +49,7 @@ public class LinuxModule extends Module {
             public Symbol findSymbolByName(String name, boolean withDependencies) {
                 UnicornPointer pointer = symbols.get(name);
                 if (pointer != null) {
-                    return new LinuxVirtualSymbol(name, this, pointer.peer);
+                    return new VirtualSymbol(name, this, pointer.peer);
                 } else {
                     return null;
                 }
@@ -57,6 +57,10 @@ public class LinuxModule extends Module {
             @Override
             public ElfSymbol getELFSymbolByName(String name) {
                 return null;
+            }
+            @Override
+            public boolean isVirtual() {
+                return true;
             }
         };
         for (Map.Entry<String, UnicornPointer> entry : symbols.entrySet()) {
@@ -78,7 +82,7 @@ public class LinuxModule extends Module {
         this.initFunctionList = initFunctionList;
     }
 
-    void callInitFunction(Emulator emulator, boolean mustCallInit) throws IOException {
+    void callInitFunction(Emulator<?> emulator, boolean mustCallInit) throws IOException {
         if (!mustCallInit && !unresolvedSymbol.isEmpty()) {
             for (ModuleSymbol moduleSymbol : unresolvedSymbol) {
                 log.info("[" + name + "]" + moduleSymbol.getSymbol().getName() + " symbol is missing before init relocationAddr=" + moduleSymbol.getRelocationAddr());
@@ -123,7 +127,7 @@ public class LinuxModule extends Module {
     }
 
     @Override
-    public int callEntry(Emulator emulator, Object... args) {
+    public int callEntry(Emulator<?> emulator, String... args) {
         if (entryPoint <= 0) {
             throw new IllegalStateException("Invalid entry point");
         }
@@ -138,7 +142,7 @@ public class LinuxModule extends Module {
         argc++;
 
         for (int i = 0; args != null && i < args.length; i++) {
-            String arg = String.valueOf(args[i]);
+            String arg = args[i];
             argv.add(memory.writeStackString(arg));
             argc++;
         }
@@ -166,7 +170,7 @@ public class LinuxModule extends Module {
             pointer.setPointer(0, arg);
         }
 
-        UnicornPointer kernelArgumentBlock = memory.allocateStack(4);
+        UnicornPointer kernelArgumentBlock = memory.allocateStack(emulator.getPointerSize());
         assert kernelArgumentBlock != null;
         kernelArgumentBlock.setInt(0, argc);
 
@@ -180,35 +184,12 @@ public class LinuxModule extends Module {
     }
 
     @Override
-    public Number[] callFunction(Emulator emulator, long offset, Object... args) {
+    public Number[] callFunction(Emulator<?> emulator, long offset, Object... args) {
         return emulateFunction(emulator, base + offset, args);
     }
 
-    public static Number[] emulateFunction(Emulator emulator, long address, Object... args) {
-        List<Number> list = new ArrayList<>(args.length);
-        for (Object arg : args) {
-            if (arg instanceof String) {
-                list.add(new StringNumber((String) arg));
-            } else if(arg instanceof byte[]) {
-                list.add(new ByteArrayNumber((byte[]) arg));
-            } else if(arg instanceof UnicornPointer) {
-                UnicornPointer pointer = (UnicornPointer) arg;
-                list.add(new PointerNumber(pointer));
-            } else if (arg instanceof Number) {
-                list.add((Number) arg);
-            } else if(arg instanceof Hashable) {
-                list.add(arg.hashCode()); // dvm object
-            } else if(arg == null) {
-                list.add(new PointerNumber(null)); // null
-            } else {
-                throw new IllegalStateException("Unsupported arg: " + arg);
-            }
-        }
-        return emulator.eFunc(address, list.toArray(new Number[0]));
-    }
-
     @Override
-    protected String getPath() {
+    public String getPath() {
         return name;
     }
 

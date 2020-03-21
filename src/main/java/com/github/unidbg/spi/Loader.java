@@ -1,17 +1,18 @@
 package com.github.unidbg.spi;
 
-import com.github.unidbg.hook.HookListener;
-import com.github.unidbg.pointer.UnicornPointer;
 import com.github.unidbg.LibraryResolver;
 import com.github.unidbg.Module;
 import com.github.unidbg.ModuleListener;
 import com.github.unidbg.Symbol;
+import com.github.unidbg.hook.HookListener;
+import com.github.unidbg.pointer.UnicornPointer;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 
+@SuppressWarnings("unused")
 public interface Loader {
 
     void setLibraryResolver(LibraryResolver libraryResolver);
@@ -22,9 +23,6 @@ public interface Loader {
     Module load(LibraryFile libraryFile) throws IOException;
     Module load(LibraryFile libraryFile, boolean forceCallInit) throws IOException;
 
-    @Deprecated
-    byte[] unpack(File elfFile) throws IOException;
-
     Module findModuleByAddress(long address);
     Module findModule(String soName);
 
@@ -33,7 +31,7 @@ public interface Loader {
     boolean dlclose(long handle);
     Symbol dlsym(long handle, String symbol) throws IOException;
 
-    void setModuleListener(ModuleListener listener);
+    void addModuleListener(ModuleListener listener);
 
     void addHookListener(HookListener listener);
 

@@ -6,14 +6,9 @@ This is an educational project to learn more about the ELF file format and ARM a
 
 ## License
 - unidbg uses software libraries from [Apache Software Foundation](http://apache.org). 
-- unidbg developers Idea enterprise licenses are supported by [Jetbrains](https://www.jetbrains.com?from=unidbg).
+- unidbg developer Idea enterprise licenses are supported by [Jetbrains](https://www.jetbrains.com?from=unidbg).
 - [IntelliJ IDEA](https://www.jetbrains.com/idea?from=unidbg) can be used to edit unidbg sources.
 - ![](assets/idea_logo.svg)
-
-## Usage
-
-VM options: -Djava.library.path=prebuilt/os -Djna.library.path=prebuilt/os  
-Where os may: linux64, win32, win64, osx64
 
 Simple tests under src/test directory
 - [src/test/java/com/bytedance/frameworks/core/encrypt/TTEncrypt.java](https://github.com/zhkl0228/unidbg/blob/master/src/test/java/com/bytedance/frameworks/core/encrypt/TTEncrypt.java)  
@@ -39,17 +34,18 @@ Simple tests under src/test directory
 - Emulation of the JNI Invocation API so JNI_OnLoad can be called.
 - Support JavaVM, JNIEnv.
 - Emulation of syscalls instruction.
-- Support ARM32 and ARM64 bit ELF.
+- Support ARM32 and ARM64 bit.
 - Inline hook, thanks to HookZz.
-- Import hook, thanks to xHook.
-- Support simple debugger, gdb stub, instruction trace, memory read/write trace.
+- Android import hook, thanks to xHook.
+- IOS fishhook and substrate hook.
+- Support simple console debugger, gdb stub, experimental IDA android debugger server, instruction trace, memory read/write trace.
 
 ## TODO
 - ~~Working iOS emulation.~~
-- ~~Working iOS objc.~~
+- ~~Add more iOS syscall.~~
 
 ## Thanks
-- [unicorn](https://github.com/unicorn-engine/unicorn)
+- [unicorn](https://github.com/zhkl0228/unicorn)
 - [HookZz](https://github.com/jmpews/HookZz)
 - [xHook](https://github.com/iqiyi/xHook)
 - [AndroidNativeEmu](https://github.com/AeonLucid/AndroidNativeEmu)

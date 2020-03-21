@@ -2,6 +2,7 @@ package com.github.unidbg.arm;
 
 import capstone.Capstone;
 import com.github.unidbg.Emulator;
+import unicorn.Unicorn;
 
 public class CodeHistory {
 
@@ -14,8 +15,10 @@ public class CodeHistory {
         this.thumb = thumb;
     }
 
-    Capstone.CsInsn disassemble(Emulator emulator) {
-        return emulator.disassemble(address, emulator.getUnicorn().mem_read(address, size), thumb)[0];
+    Capstone.CsInsn disassemble(Emulator<?> emulator) {
+        Unicorn u = emulator.getUnicorn();
+        byte[] code = u.mem_read(address, size);
+        return emulator.disassemble(address, code, thumb, 1)[0];
     }
 
 }

@@ -6,9 +6,9 @@ import com.sun.jna.Pointer;
 import java.util.Arrays;
 import java.util.List;
 
-public class ClassRW extends UnicornStructure implements Objc {
+public class ClassRW extends UnicornStructure implements ObjcConstants {
 
-    public ClassRW(Pointer p) {
+    ClassRW(Pointer p) {
         super(p);
     }
 
@@ -35,6 +35,12 @@ public class ClassRW extends UnicornStructure implements Objc {
 
     public void changeFlags(int set, int clear) {
         flags = (flags | set) & ~clear;
+    }
+
+    public ClassRO ro() {
+        ClassRO ro = new ClassRO(this.ro);
+        ro.unpack();
+        return ro;
     }
 
 }

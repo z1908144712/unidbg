@@ -2,47 +2,56 @@ package com.github.unidbg.linux;
 
 import com.github.unidbg.*;
 import com.github.unidbg.arm.ARMEmulator;
+import com.github.unidbg.file.linux.AndroidFileIO;
 import com.github.unidbg.hook.HookListener;
+import com.github.unidbg.linux.android.AndroidResolver;
 import com.github.unidbg.linux.android.ElfLibraryFile;
 import com.github.unidbg.memory.*;
-import com.github.unidbg.memory.MemRegion;
 import com.github.unidbg.pointer.UnicornPointer;
 import com.github.unidbg.spi.AbstractLoader;
 import com.github.unidbg.spi.InitFunction;
 import com.github.unidbg.spi.LibraryFile;
 import com.github.unidbg.spi.Loader;
 import com.github.unidbg.unix.UnixSyscallHandler;
-import com.github.unidbg.utils.Inspector;
 import com.sun.jna.Pointer;
 import net.fornwall.jelf.*;
-import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import unicorn.*;
+import unicorn.Arm64Const;
+import unicorn.ArmConst;
+import unicorn.Unicorn;
+import unicorn.UnicornConst;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.*;
 
-public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
+public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements Memory, Loader {
 
     private static final Log log = LogFactory.getLog(AndroidElfLoader.class);
 
     private Symbol malloc, free;
 
-    public AndroidElfLoader(Emulator emulator, UnixSyscallHandler syscallHandler) {
+    public AndroidElfLoader(Emulator<AndroidFileIO> emulator, UnixSyscallHandler<AndroidFileIO> syscallHandler) {
         super(emulator, syscallHandler);
 
         // init stack
-        final long stackSize = STACK_SIZE_OF_PAGE * emulator.getPageAlign();
+        stackSize = STACK_SIZE_OF_PAGE * emulator.getPageAlign();
         unicorn.mem_map(STACK_BASE - stackSize, stackSize, UnicornConst.UC_PROT_READ | UnicornConst.UC_PROT_WRITE);
 
         setStackPoint(STACK_BASE);
-        initializeTLS();
+        initializeTLS(new String[] {
+                "ANDROID_DATA=/data",
+                "ANDROID_ROOT=/system"
+        });
         this.setErrno(0);
+    }
+
+    @Override
+    public void setLibraryResolver(LibraryResolver libraryResolver) {
+        syscallHandler.addIOResolver((AndroidResolver) libraryResolver);
+        super.setLibraryResolver(libraryResolver);
     }
 
     @Override
@@ -75,7 +84,7 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
                     }
                 } else {
                     unicorn.context_restore(thread.context);
-                    long pc = ((Number) unicorn.reg_read(emulator.getPointerSize() == 4 ? ArmConst.UC_ARM_REG_PC : Arm64Const.UC_ARM64_REG_PC)).intValue() & 0xffffffffL;
+                    long pc = ((Number) unicorn.reg_read(emulator.is32Bit() ? ArmConst.UC_ARM_REG_PC : Arm64Const.UC_ARM64_REG_PC)).intValue() & 0xffffffffL;
                     log.info("resume thread: fn=" + thread.fn + ", arg=" + thread.arg + ", child_stack=" + thread.child_stack + ", pc=0x" + Long.toHexString(pc));
                     unicorn.emu_start(pc, 0, 0, 0);
                 }
@@ -98,7 +107,7 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
         return outFile;
     }
 
-    private void initializeTLS() {
+    private void initializeTLS(String[] envs) {
         final Pointer thread = allocateStack(0x400); // reserve space for pthread_internal_t
 
         final Pointer __stack_chk_guard = allocateStack(emulator.getPointerSize());
@@ -111,16 +120,29 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
 
         final Pointer auxv = allocateStack(0x100);
         assert auxv != null;
-        if (emulator.getPointerSize() == 4) {
+        if (emulator.is32Bit()) {
             auxv.setInt(0, 25); // AT_RANDOM is a pointer to 16 bytes of randomness on the stack.
         } else {
             auxv.setLong(0, 25); // AT_RANDOM is a pointer to 16 bytes of randomness on the stack.
         }
         auxv.setPointer(emulator.getPointerSize(), __stack_chk_guard);
 
-        final Pointer environ = allocateStack(8);
+        List<String> envList = new ArrayList<>();
+        for (String env : envs) {
+            int index = env.indexOf('=');
+            if (index != -1) {
+                envList.add(env);
+            }
+        }
+        final Pointer environ = allocateStack(emulator.getPointerSize() * (envList.size() + 1));
         assert environ != null;
-        environ.setInt(0, 0);
+        Pointer pointer = environ;
+        for (String env : envList) {
+            Pointer envPointer = writeStackString(env);
+            pointer.setPointer(0, envPointer);
+            pointer = pointer.share(emulator.getPointerSize());
+        }
+        pointer.setPointer(0, null);
 
         final Pointer argv = allocateStack(0x100);
         assert argv != null;
@@ -134,11 +156,16 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
         this.errno = tls.share(emulator.getPointerSize() * 2);
         tls.setPointer(emulator.getPointerSize() * 3, argv);
 
-        if (emulator.getPointerSize() == 4) {
+        if (emulator.is32Bit()) {
             unicorn.reg_write(ArmConst.UC_ARM_REG_C13_C0_3, tls.peer);
         } else {
             unicorn.reg_write(Arm64Const.UC_ARM64_REG_TPIDR_EL0, tls.peer);
         }
+
+        long sp = getStackPoint();
+        sp &= (~(emulator.is64Bit() ? 15 : 7));
+        setStackPoint(sp);
+
         if (log.isDebugEnabled()) {
             log.debug("initializeTLS tls=" + tls + ", argv=" + argv + ", auxv=" + auxv + ", thread=" + thread + ", environ=" + environ + ", sp=0x" + Long.toHexString(getStackPoint()));
         }
@@ -146,25 +173,8 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
 
     private final Map<String, LinuxModule> modules = new LinkedHashMap<>();
 
-    @Override
-    public byte[] unpack(File elfFile) throws IOException {
-        final byte[] fileData = FileUtils.readFileToByteArray(elfFile);
-        LinuxModule module = loadInternal(new ElfLibraryFile(elfFile), new WriteHook() {
-            @Override
-            public void hook(Unicorn u, long address, int size, long value, Object user) {
-                byte[] data = Arrays.copyOf(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(value).array(), size);
-                if (log.isDebugEnabled()) {
-                    Inspector.inspect(data, "### Unpack WRITE at 0x" + Long.toHexString(address));
-                }
-                System.arraycopy(data, 0, fileData, (int) address, data.length);
-            }
-        }, true);
-        emulator.createDalvikVM(null).callJNI_OnLoad(emulator, module);
-        return fileData;
-    }
-
-    protected final LinuxModule loadInternal(LibraryFile libraryFile, WriteHook unpackHook, boolean forceCallInit) throws IOException {
-        LinuxModule module = loadInternal(libraryFile, unpackHook);
+    protected final LinuxModule loadInternal(LibraryFile libraryFile, boolean forceCallInit) throws IOException {
+        LinuxModule module = loadInternal(libraryFile);
         resolveSymbols();
         if (callInitFunction || forceCallInit) {
             for (LinuxModule m : modules.values().toArray(new LinuxModule[0])) {
@@ -220,10 +230,10 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
         }
 
         if (calInit) {
-            return loadInternal(file, null, false);
+            return loadInternal(file, false);
         }
 
-        LinuxModule module = loadInternal(file, null);
+        LinuxModule module = loadInternal(file);
         resolveSymbols();
         if (!callInitFunction) { // No need call init array
             for (LinuxModule m : modules.values()) {
@@ -270,13 +280,13 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
         return false;
     }
 
-    private LinuxModule loadInternal(LibraryFile libraryFile, final WriteHook unpackHook) throws IOException {
+    private LinuxModule loadInternal(LibraryFile libraryFile) throws IOException {
         final ElfFile elfFile = ElfFile.fromBytes(libraryFile.readToByteArray());
 
-        if (emulator.getPointerSize() == 4 && elfFile.objectSize != ElfFile.CLASS_32) {
+        if (emulator.is32Bit() && elfFile.objectSize != ElfFile.CLASS_32) {
             throw new ElfException("Must be 32-bit");
         }
-        if (emulator.getPointerSize() == 8 && elfFile.objectSize != ElfFile.CLASS_64) {
+        if (emulator.is64Bit() && elfFile.objectSize != ElfFile.CLASS_64) {
             throw new ElfException("Must be 64-bit");
         }
 
@@ -284,11 +294,11 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
             throw new ElfException("Must be LSB");
         }
 
-        if (emulator.getPointerSize() == 4 && elfFile.arch != ElfFile.ARCH_ARM) {
+        if (emulator.is32Bit() && elfFile.arch != ElfFile.ARCH_ARM) {
             throw new ElfException("Must be ARM arch.");
         }
 
-        if (emulator.getPointerSize() == 8 && elfFile.arch != ElfFile.ARCH_AARCH64) {
+        if (emulator.is64Bit() && elfFile.arch != ElfFile.ARCH_AARCH64) {
             throw new ElfException("Must be ARM64 arch.");
         }
 
@@ -323,23 +333,10 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
                     }
 
                     final long begin = load_base + ph.virtual_address;
-                    final long end = begin + ph.mem_size;
                     Alignment alignment = this.mem_map(begin, ph.mem_size, prot, libraryFile.getName());
                     unicorn.mem_write(begin, ph.getPtLoadData());
 
                     regions.add(new MemRegion(alignment.address, alignment.address + alignment.size, prot, libraryFile, ph.virtual_address));
-
-                    if (unpackHook != null && (prot & UnicornConst.UC_PROT_EXEC) != 0) { // unpack executable code
-                        unicorn.hook_add(new WriteHook() {
-                            @Override
-                            public void hook(Unicorn u, long address, int size, long value, Object user) {
-                                if (address >= begin && address < end) {
-                                    unpackHook.hook(u, address - load_base, size, value, user);
-                                }
-                            }
-                        }, begin, end, null);
-                    }
-
                     break;
                 case ElfSegment.PT_DYNAMIC:
                     dynamicStructure = ph.getDynamicStructure();
@@ -377,7 +374,7 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
                 neededLibraryFile = libraryResolver.resolveLibrary(emulator, neededLibrary);
             }
             if (neededLibraryFile != null) {
-                LinuxModule needed = loadInternal(neededLibraryFile, null);
+                LinuxModule needed = loadInternal(neededLibraryFile);
                 needed.addReferenceCount();
                 neededLibraries.put(FilenameUtils.getBaseName(needed.name), needed);
             } else {
@@ -390,7 +387,9 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
                 ModuleSymbol moduleSymbol = iterator.next();
                 ModuleSymbol resolved = moduleSymbol.resolve(module.getNeededLibraries(), false, hookListeners, emulator.getSvcMemory());
                 if (resolved != null) {
-                    log.debug("[" + moduleSymbol.soName + "]" + moduleSymbol.symbol.getName() + " symbol resolved to " + resolved.toSoName);
+                    if (log.isDebugEnabled()) {
+                        log.debug("[" + moduleSymbol.soName + "]" + moduleSymbol.symbol.getName() + " symbol resolved to " + resolved.toSoName);
+                    }
                     resolved.relocation(emulator);
                     iterator.remove();
                 }
@@ -417,8 +416,8 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
 
             ModuleSymbol moduleSymbol;
             switch (type) {
-                case ARMEmulator.R_ARM_ABS32:
-                    long offset = relocationAddr.getInt(0);
+                case ARMEmulator.R_ARM_ABS32: {
+                    int offset = relocationAddr.getInt(0);
                     moduleSymbol = resolveSymbol(load_base, symbol, relocationAddr, soName, neededLibraries.values(), offset);
                     if (moduleSymbol == null) {
                         list.add(new ModuleSymbol(soName, load_base, symbol, relocationAddr, null, offset));
@@ -426,8 +425,9 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
                         moduleSymbol.relocation(emulator);
                     }
                     break;
-                case ARMEmulator.R_AARCH64_ABS64:
-                    offset = relocationAddr.getLong(0);
+                }
+                case ARMEmulator.R_AARCH64_ABS64: {
+                    long offset = relocationAddr.getLong(0) + relocation.addend();
                     moduleSymbol = resolveSymbol(load_base, symbol, relocationAddr, soName, neededLibraries.values(), offset);
                     if (moduleSymbol == null) {
                         list.add(new ModuleSymbol(soName, load_base, symbol, relocationAddr, null, offset));
@@ -435,13 +435,16 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
                         moduleSymbol.relocation(emulator);
                     }
                     break;
-                case ARMEmulator.R_ARM_RELATIVE:
+                }
+                case ARMEmulator.R_ARM_RELATIVE: {
+                    int offset = relocationAddr.getInt(0);
                     if (sym_value == 0) {
-                        relocationAddr.setInt(0, (int) load_base + relocationAddr.getInt(0));
+                        relocationAddr.setInt(0, (int) load_base + offset);
                     } else {
                         throw new IllegalStateException("sym_value=0x" + Long.toHexString(sym_value));
                     }
                     break;
+                }
                 case ARMEmulator.R_AARCH64_RELATIVE:
                     if (sym_value == 0) {
                         relocationAddr.setLong(0, load_base + relocation.addend());
@@ -530,7 +533,7 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
         if (dynsym == null) {
             throw new IllegalStateException("dynsym is null");
         }
-        LinuxModule module = new LinuxModule(load_base, bound_high, soName, dynsym, list, initFunctionList, neededLibraries, regions);
+        LinuxModule module = new LinuxModule(load_base, size, soName, dynsym, list, initFunctionList, neededLibraries, regions);
         if ("libc.so".equals(soName)) { // libc
             ElfSymbol __thread_entry = module.getELFSymbolByName("__thread_entry");
             if (__thread_entry != null) {
@@ -550,9 +553,7 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
         }
         module.setEntryPoint(elfFile.entry_point);
         log.debug("Load library " + soName + " offset=" + (System.currentTimeMillis() - start) + "ms" + ", entry_point=0x" + Long.toHexString(elfFile.entry_point));
-        if (moduleListener != null) {
-            moduleListener.onLoaded(emulator, module);
-        }
+        notifyModuleLoaded(module);
         return module;
     }
 
@@ -562,9 +563,6 @@ public class AndroidElfLoader extends AbstractLoader implements Memory, Loader {
         modules.put(name, module);
         if (maxSoName == null || name.length() > maxSoName.length()) {
             maxSoName = name;
-        }
-        if (moduleListener != null) {
-            moduleListener.onLoaded(emulator, module);
         }
         return module;
     }

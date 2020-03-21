@@ -4,6 +4,7 @@ import com.github.unidbg.Module;
 import com.github.unidbg.Symbol;
 import com.github.unidbg.hook.IHook;
 import com.github.unidbg.hook.ReplaceCallback;
+import com.github.unidbg.ios.struct.objc.ObjcClass;
 import com.sun.jna.Pointer;
 
 public interface ISubstrate extends IHook {
@@ -28,7 +29,10 @@ public interface ISubstrate extends IHook {
      * @param symbol The address of code to instrument with replacement code. This is normally, but need not be, a function.
      */
     void hookFunction(Symbol symbol, ReplaceCallback callback);
+    @SuppressWarnings("unused")
     void hookFunction(long address, ReplaceCallback callback);
+    void hookFunction(Symbol symbol, ReplaceCallback callback, boolean enablePostCall);
+    void hookFunction(long address, ReplaceCallback callback, boolean enablePostCall);
 
     /**
      * void MSHookMessageEx(Class _class, SEL message, IMP hook, IMP *old);
@@ -36,5 +40,8 @@ public interface ISubstrate extends IHook {
      * @param message Objective-C selector of message that will be instrumented. This might be a literal using @selector or generated at runtime with sel_registerName.
      */
     void hookMessageEx(Pointer _class, Pointer message, ReplaceCallback callback);
+    void hookMessageEx(ObjcClass _class, Pointer message, ReplaceCallback callback);
+    void hookMessageEx(Pointer _class, Pointer message, ReplaceCallback callback, boolean enablePostCall);
+    void hookMessageEx(ObjcClass _class, Pointer message, ReplaceCallback callback, boolean enablePostCall);
 
 }

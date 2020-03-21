@@ -1,26 +1,34 @@
 package com.github.unidbg.unix.file;
 
 import com.github.unidbg.Emulator;
-import com.github.unidbg.file.AbstractFileIO;
-import com.github.unidbg.file.FileIO;
+import com.github.unidbg.file.BaseFileIO;
+import com.github.unidbg.file.ios.DarwinFileIO;
+import com.github.unidbg.file.ios.StatStructure;
+import com.github.unidbg.file.linux.AndroidFileIO;
+import com.github.unidbg.file.linux.IOConstants;
+import com.github.unidbg.ios.struct.kernel.StatFS;
 import com.github.unidbg.unix.IO;
+import com.github.unidbg.unix.struct.SockAddr;
 import com.sun.jna.Pointer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import unicorn.Unicorn;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.SocketException;
+import java.net.*;
+import java.util.Arrays;
 
-public abstract class SocketIO extends AbstractFileIO implements FileIO {
+public abstract class SocketIO extends BaseFileIO implements AndroidFileIO, DarwinFileIO {
 
     private static final Log log = LogFactory.getLog(SocketIO.class);
 
-    public static final int AF_UNSPEC = 0;
-    public static final int AF_LOCAL = 1; // AF_UNIX
-    public static final int AF_INET = 2;
-    public static final int AF_INET6 = 10;
+    public static final short AF_UNSPEC = 0;
+    public static final short AF_LOCAL = 1; // AF_UNIX
+    public static final short AF_INET = 2;
+    public static final short AF_INET6 = 10;
+
+    protected static final int IPV4_ADDR_LEN = 16;
+    protected static final int IPV6_ADDR_LEN = 28;
 
     public static final int SOCK_STREAM = 1;
     public static final int SOCK_DGRAM = 2;
@@ -49,7 +57,7 @@ public abstract class SocketIO extends AbstractFileIO implements FileIO {
     private static final int TCP_MAXSEG = 2;
 
     protected SocketIO() {
-        super(O_RDWR);
+        super(IOConstants.O_RDWR);
     }
 
     @Override
@@ -57,19 +65,17 @@ public abstract class SocketIO extends AbstractFileIO implements FileIO {
         try {
             switch (level) {
                 case SOL_SOCKET:
-                    switch (optname) {
-                        case SO_ERROR:
-                            optlen.setInt(0, 4);
-                            optval.setInt(0, 0);
-                            return 0;
+                    if (optname == SO_ERROR) {
+                        optlen.setInt(0, 4);
+                        optval.setInt(0, 0);
+                        return 0;
                     }
                     break;
                 case IPPROTO_TCP:
-                    switch (optname) {
-                        case TCP_NODELAY:
-                            optlen.setInt(0, 4);
-                            optval.setInt(0, getTcpNoDelay());
-                            return 0;
+                    if (optname == TCP_NODELAY) {
+                        optlen.setInt(0, 4);
+                        optval.setInt(0, getTcpNoDelay());
+                        return 0;
                     }
                     break;
             }
@@ -155,22 +161,46 @@ public abstract class SocketIO extends AbstractFileIO implements FileIO {
     @Override
     public int getsockname(Pointer addr, Pointer addrlen) {
         InetSocketAddress local = getLocalSocketAddress();
-        addr.setShort(0, (short) AF_INET);
-        addr.setShort(2, Short.reverseBytes((short) local.getPort()));
-        addr.write(4, local.getAddress().getAddress(), 0, 4); // ipv4
-        addr.setLong(8, 0);
-        addrlen.setInt(0, 16);
+        fillAddress(local, addr, addrlen);
         return 0;
+    }
+
+    protected final void fillAddress(InetSocketAddress socketAddress, Pointer addr, Pointer addrlen) {
+        InetAddress address = socketAddress.getAddress();
+        SockAddr sockAddr = new SockAddr(addr);
+        sockAddr.sin_port = (short) socketAddress.getPort();
+        if (address instanceof Inet4Address) {
+            sockAddr.sin_family = AF_INET;
+            sockAddr.sin_addr = Arrays.copyOf(address.getAddress(), IPV4_ADDR_LEN - 4);
+            addrlen.setInt(0, IPV4_ADDR_LEN);
+        } else if (address instanceof Inet6Address) {
+            sockAddr.sin_family = AF_INET6;
+            sockAddr.sin_addr = Arrays.copyOf(address.getAddress(), IPV6_ADDR_LEN - 4);
+            addrlen.setInt(0, IPV6_ADDR_LEN);
+        } else {
+            throw new UnsupportedOperationException();
+        }
     }
 
     protected abstract InetSocketAddress getLocalSocketAddress();
 
     @Override
     public int connect(Pointer addr, int addrlen) {
-        if (addrlen == 16) {
+        if (addrlen == IPV4_ADDR_LEN) {
             return connect_ipv4(addr, addrlen);
-        } else if(addrlen == 28) {
+        } else if(addrlen == IPV6_ADDR_LEN) {
             return connect_ipv6(addr, addrlen);
+        } else {
+            throw new IllegalStateException("addrlen=" + addrlen);
+        }
+    }
+
+    @Override
+    public final int bind(Pointer addr, int addrlen) {
+        if (addrlen == IPV4_ADDR_LEN) {
+            return bind_ipv4(addr, addrlen);
+        } else if(addrlen == IPV6_ADDR_LEN) {
+            return bind_ipv6(addr, addrlen);
         } else {
             throw new IllegalStateException("addrlen=" + addrlen);
         }
@@ -179,6 +209,14 @@ public abstract class SocketIO extends AbstractFileIO implements FileIO {
     protected abstract int connect_ipv6(Pointer addr, int addrlen);
 
     protected abstract int connect_ipv4(Pointer addr, int addrlen);
+
+    protected int bind_ipv6(Pointer addr, int addrlen) {
+        throw new AbstractMethodError(getClass().getName());
+    }
+
+    protected int bind_ipv4(Pointer addr, int addrlen) {
+        throw new AbstractMethodError(getClass().getName());
+    }
 
     @Override
     public int recvfrom(Unicorn unicorn, Pointer buf, int len, int flags, Pointer src_addr, Pointer addrlen) {
@@ -199,23 +237,30 @@ public abstract class SocketIO extends AbstractFileIO implements FileIO {
     }
 
     @Override
-    public int fstat(Emulator emulator, Unicorn unicorn, Pointer stat) {
-        int st_mode = IO.S_IFSOCK;
-        /*
-         * 0x00: st_dev
-         * 0x18: st_uid
-         * 0x1c: st_gid
-         * 0x30: st_size
-         * 0x38: st_blksize
-         * 0x60: st_ino
-         */
-        stat.setLong(0x0, 0); // st_dev
-        stat.setInt(0x10, st_mode); // st_mode
-        stat.setInt(0x18, 0); // st_uid
-        stat.setInt(0x1c, 0); // st_gid
-        stat.setLong(0x30, 0); // st_size
-        stat.setInt(0x38, 0); // st_blksize
-        stat.setLong(0x60, 0); // st_ino
+    public int fstat(Emulator<?> emulator, com.github.unidbg.file.linux.StatStructure stat) {
+        stat.st_dev = 0;
+        stat.st_mode = IO.S_IFSOCK;
+        stat.st_uid = 0;
+        stat.st_gid = 0;
+        stat.st_size = 0;
+        stat.st_blksize = 0;
+        stat.st_ino = 0;
+        stat.pack();
         return 0;
+    }
+
+    @Override
+    public int fstat(Emulator<?> emulator, StatStructure stat) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public int fstatfs(StatFS statFS) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public int getdents64(Pointer dirp, int size) {
+        throw new UnsupportedOperationException();
     }
 }

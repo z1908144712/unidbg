@@ -6,30 +6,45 @@ import com.github.unidbg.memory.MemRegion;
 import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.UnicornPointer;
 import com.github.unidbg.spi.SyscallHandler;
+import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import unicorn.Unicorn;
 import unicorn.UnicornConst;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
 public class ARMSvcMemory implements SvcMemory {
 
     private static final Log log = LogFactory.getLog(ARMSvcMemory.class);
 
-    private final Emulator emulator;
+    private final Emulator<?> emulator;
     private UnicornPointer base;
 
-    ARMSvcMemory(Unicorn unicorn, long base, int size, Emulator emulator) {
+    public ARMSvcMemory(Unicorn unicorn, long base, int size, Emulator<?> emulator) {
         this.emulator = emulator;
         this.base = UnicornPointer.pointer(emulator, base);
         assert this.base != null;
         this.base.setSize(size);
 
+        this.baseAddr = base;
+        this.size = size;
+
         unicorn.mem_map(base, size, UnicornConst.UC_PROT_READ | UnicornConst.UC_PROT_EXEC);
+    }
+
+    private final long baseAddr;
+    private final int size;
+
+    @Override
+    public long getBase() {
+        return baseAddr;
+    }
+
+    @Override
+    public int getSize() {
+        return size;
     }
 
     private final List<MemRegion> memRegions = new ArrayList<>();
@@ -102,6 +117,20 @@ public class ARMSvcMemory implements SvcMemory {
             throw new IllegalStateException();
         }
         return svc.onRegister(this, number);
+    }
+
+    @Override
+    public final UnicornPointer writeStackString(String str) {
+        byte[] data = str.getBytes(StandardCharsets.UTF_8);
+        return writeStackBytes(Arrays.copyOf(data, data.length + 1));
+    }
+
+    @Override
+    public final UnicornPointer writeStackBytes(byte[] data) {
+        UnicornPointer pointer = allocate(data.length, "writeStackBytes: " + Hex.encodeHexString(data));
+        assert pointer != null;
+        pointer.write(0, data, 0, data.length);
+        return pointer;
     }
 
 }

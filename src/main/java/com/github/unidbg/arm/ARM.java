@@ -13,6 +13,7 @@ import org.apache.commons.logging.LogFactory;
 import unicorn.Arm64Const;
 import unicorn.ArmConst;
 import unicorn.Unicorn;
+import unicorn.UnicornException;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -43,11 +44,11 @@ public class ARM {
         return (ins & 0xe000) == 0xe000 && (ins & 0x1800) != 0x0000;
     }
 
-    public static void showThumbRegs(Emulator emulator) {
+    public static void showThumbRegs(Emulator<?> emulator) {
         showRegs(emulator, ARM.THUMB_REGS);
     }
 
-    public static void showRegs(Emulator emulator, int[] regs) {
+    public static void showRegs(Emulator<?> emulator, int[] regs) {
         Unicorn unicorn = emulator.getUnicorn();
         boolean thumb = isThumb(unicorn);
         if (regs == null || regs.length < 1) {
@@ -89,7 +90,7 @@ public class ARM {
                 case ArmConst.UC_ARM_REG_R3:
                     number = (Number) unicorn.reg_read(reg);
                     value = number.intValue();
-                    builder.append(String.format(Locale.US, ", r3=0x%x", value));
+                    builder.append(String.format(Locale.US, " r3=0x%x", value));
                     break;
                 case ArmConst.UC_ARM_REG_R4:
                     number = (Number) unicorn.reg_read(reg);
@@ -139,7 +140,7 @@ public class ARM {
                 case ArmConst.UC_ARM_REG_SP:
                     number = (Number) unicorn.reg_read(reg);
                     value = number.intValue();
-                    builder.append(String.format(Locale.US, " sp=0x%x", value));
+                    builder.append(String.format(Locale.US, " SP=0x%x", value));
                     break;
                 case ArmConst.UC_ARM_REG_LR:
                     builder.append(String.format(Locale.US, " LR=%s", UnicornPointer.register(emulator, ArmConst.UC_ARM_REG_LR)));
@@ -152,7 +153,7 @@ public class ARM {
         System.out.println(builder.toString());
     }
 
-    public static void showRegs64(Emulator emulator, int[] regs) {
+    public static void showRegs64(Emulator<?> emulator, int[] regs) {
         Unicorn unicorn = emulator.getUnicorn();
         if (regs == null || regs.length < 1) {
             regs = ARM.getAll64Registers();
@@ -176,6 +177,14 @@ public class ARM {
                     number = (Number) unicorn.reg_read(reg);
                     value = number.longValue();
                     builder.append(String.format(Locale.US, " x0=0x%x", value));
+                    if (value < 0) {
+                        builder.append('(').append(value).append(')');
+                    } else if((value & 0x7fffffff00000000L) == 0) {
+                        int iv = (int) value;
+                        if (iv < 0) {
+                            builder.append('(').append(iv).append(')');
+                        }
+                    }
                     break;
                 case Arm64Const.UC_ARM64_REG_X1:
                     number = (Number) unicorn.reg_read(reg);
@@ -190,7 +199,7 @@ public class ARM {
                 case Arm64Const.UC_ARM64_REG_X3:
                     number = (Number) unicorn.reg_read(reg);
                     value = number.longValue();
-                    builder.append(String.format(Locale.US, ", x3=0x%x", value));
+                    builder.append(String.format(Locale.US, " x3=0x%x", value));
                     break;
                 case Arm64Const.UC_ARM64_REG_X4:
                     number = (Number) unicorn.reg_read(reg);
@@ -325,7 +334,7 @@ public class ARM {
                 case Arm64Const.UC_ARM64_REG_SP:
                     number = (Number) unicorn.reg_read(reg);
                     value = number.longValue();
-                    builder.append(String.format(Locale.US, "\nsp=0x%x", value));
+                    builder.append(String.format(Locale.US, "\nSP=0x%x", value));
                     break;
                 case Arm64Const.UC_ARM64_REG_LR:
                     builder.append(String.format(Locale.US, "\nLR=%s", UnicornPointer.register(emulator, Arm64Const.UC_ARM64_REG_LR)));
@@ -436,8 +445,8 @@ public class ARM {
             Arm64Const.UC_ARM64_REG_NZCV
     };
 
-    private static int[] getRegArgs(Emulator emulator) {
-        return emulator.getPointerSize() == 4 ? ARM_ARG_REGS : ARM64_ARG_REGS;
+    private static int[] getRegArgs(Emulator<?> emulator) {
+        return emulator.is32Bit() ? ARM_ARG_REGS : ARM64_ARG_REGS;
     }
 
     private static int[] getAllRegisters(boolean thumb) {
@@ -485,11 +494,11 @@ public class ARM {
 
     private static final Pattern MEM_PATTERN = Pattern.compile("\\w+,\\s\\[(\\w+),\\s#(-)?(0x)?(\\w+)]");
 
-    static String assembleDetail(Emulator emulator, Capstone.CsInsn ins, long address, boolean thumb) {
+    static String assembleDetail(Emulator<?> emulator, Capstone.CsInsn ins, long address, boolean thumb) {
         return assembleDetail(emulator, ins, address, thumb, false);
     }
 
-    static String assembleDetail(Emulator emulator, Capstone.CsInsn ins, long address, boolean thumb, boolean current) {
+    public static String assembleDetail(Emulator<?> emulator, Capstone.CsInsn ins, long address, boolean thumb, boolean current) {
         Memory memory = emulator.getMemory();
         char space = current ? '*' : ' ';
         StringBuilder sb = new StringBuilder();
@@ -530,7 +539,7 @@ public class ARM {
                 if (mem.base == Arm_const.ARM_REG_PC && mem.index == 0 && mem.scale == 1 && mem.lshift == 0) {
                     long addr = ins.address + mem.disp;
                     addr += (thumb ? 4 : 8);
-                    appendAddrValue(sb, addr, memory);
+                    appendAddrValue(sb, addr, memory, emulator.is64Bit());
                 }
             } else if((matcher = MEM_PATTERN.matcher(ins.opStr)).find()) {
                 String reg = matcher.group(1);
@@ -545,13 +554,49 @@ public class ARM {
                 if ("pc".equals(reg)) {
                     long addr = ins.address + value;
                     addr += (thumb ? 4 : 8);
-                    appendAddrValue(sb, addr, memory);
+                    appendAddrValue(sb, addr, memory, emulator.is64Bit());
                 } else if (current) {
                     boolean is64Bit = emulator.is64Bit();
                     int r = -1;
                     switch (reg) {
+                        case "r0":
+                            r = ArmConst.UC_ARM_REG_R0;
+                            break;
+                        case "r1":
+                            r = ArmConst.UC_ARM_REG_R1;
+                            break;
+                        case "r2":
+                            r = ArmConst.UC_ARM_REG_R2;
+                            break;
+                        case "r3":
+                            r = ArmConst.UC_ARM_REG_R3;
+                            break;
+                        case "r4":
+                            r = ArmConst.UC_ARM_REG_R4;
+                            break;
+                        case "r5":
+                            r = ArmConst.UC_ARM_REG_R5;
+                            break;
                         case "r6":
                             r = ArmConst.UC_ARM_REG_R6;
+                            break;
+                        case "r7":
+                            r = ArmConst.UC_ARM_REG_R7;
+                            break;
+                        case "x0":
+                            r = Arm64Const.UC_ARM64_REG_X0;
+                            break;
+                        case "x8":
+                            r = Arm64Const.UC_ARM64_REG_X8;
+                            break;
+                        case "x19":
+                            r = Arm64Const.UC_ARM64_REG_X19;
+                            break;
+                        case "x20":
+                            r = Arm64Const.UC_ARM64_REG_X20;
+                            break;
+                        case "x21":
+                            r = Arm64Const.UC_ARM64_REG_X21;
                             break;
                         case "fp":
                             r = is64Bit ? Arm64Const.UC_ARM64_REG_FP : ArmConst.UC_ARM_REG_FP;
@@ -565,9 +610,10 @@ public class ARM {
                     }
                     if (r != -1) {
                         UnicornPointer pointer = UnicornPointer.register(emulator, r);
-                        assert pointer != null;
-                        long addr = pointer.toUIntPeer() + value;
-                        appendAddrValue(sb, addr, memory);
+                        if (pointer != null) {
+                            long addr = (is64Bit ? pointer.peer : pointer.toUIntPeer()) + value;
+                            appendAddrValue(sb, addr, memory, is64Bit);
+                        }
                     }
                 }
             }
@@ -576,19 +622,36 @@ public class ARM {
         return sb.toString();
     }
 
-    private static void appendAddrValue(StringBuilder sb, long addr, Memory memory) {
+    private static void appendAddrValue(StringBuilder sb, long addr, Memory memory, boolean is64Bit) {
         Pointer pointer = memory.pointer(addr & 0xfffffffffffffffcL);
-        int value = pointer.getInt(0);
         sb.append(" [0x").append(Long.toHexString(addr)).append(']');
-        sb.append(" => 0x").append(Long.toHexString(value & 0xffffffffL));
-        if (value < 0) {
-            sb.append(" (-0x").append(Integer.toHexString(-value)).append(")");
+        try {
+            if (is64Bit) {
+                long value = pointer.getLong(0);
+                sb.append(" => 0x").append(Long.toHexString(value));
+                if (value < 0) {
+                    sb.append(" (-0x").append(Long.toHexString(-value)).append(')');
+                } else if((value & 0x7fffffff00000000L) == 0) {
+                    int iv = (int) value;
+                    if (iv < 0) {
+                        sb.append(" (-0x").append(Integer.toHexString(-iv)).append(')');
+                    }
+                }
+            } else {
+                int value = pointer.getInt(0);
+                sb.append(" => 0x").append(Long.toHexString(value & 0xffffffffL));
+                if (value < 0) {
+                    sb.append(" (-0x").append(Integer.toHexString(-value)).append(")");
+                }
+            }
+        } catch (UnicornException exception) {
+            sb.append(" => ").append(exception.getMessage());
         }
     }
 
     private static final Log log = LogFactory.getLog(ARM.class);
 
-    static Arguments initArgs(Emulator emulator, boolean padding, Number... arguments) {
+    static Arguments initArgs(Emulator<?> emulator, boolean padding, Number... arguments) {
         Unicorn unicorn = emulator.getUnicorn();
         Memory memory = emulator.getMemory();
 
@@ -664,11 +727,17 @@ public class ARM {
         }
         while (!list.isEmpty()) {
             Number number = list.remove(0);
-            Pointer pointer = memory.allocateStack(emulator.getPointerSize());
+            UnicornPointer pointer = memory.allocateStack(emulator.getPointerSize());
             assert pointer != null;
             if (emulator.is64Bit()) {
+                if ((pointer.peer % 8) != 0) {
+                    log.warn("initArgs pointer=" + pointer);
+                }
                 pointer.setLong(0, number.longValue());
             } else {
+                if ((pointer.toUIntPeer() % 4) != 0) {
+                    log.warn("initArgs pointer=" + pointer);
+                }
                 pointer.setInt(0, number.intValue());
             }
         }

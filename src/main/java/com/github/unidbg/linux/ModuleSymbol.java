@@ -82,7 +82,7 @@ public class ModuleSymbol {
                 if ("android_get_application_target_sdk_version".equals(symbolName)) {
                     long hook = svcMemory.registerSvc(new ArmHook() {
                         @Override
-                        protected HookStatus hook(Emulator emulator) {
+                        protected HookStatus hook(Emulator<?> emulator) {
                             return HookStatus.LR(emulator, 0);
                         }
                     }).peer;
@@ -94,14 +94,14 @@ public class ModuleSymbol {
         return null;
     }
 
-    void relocation(Emulator emulator) {
+    void relocation(Emulator<?> emulator) {
         final long value;
         if (load_base == WEAK_BASE) {
             value = offset;
         } else {
             value = load_base + (symbol == null ? 0 : symbol.value) + offset;
         }
-        if (emulator.getPointerSize() == 8) {
+        if (emulator.is64Bit()) {
             relocationAddr.setLong(0, value);
         } else {
             relocationAddr.setInt(0, (int) value);

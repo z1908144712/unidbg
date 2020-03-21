@@ -3,13 +3,16 @@ package com.github.unidbg.pointer;
 import com.github.unidbg.Emulator;
 import com.github.unidbg.InvalidMemoryAccessException;
 import com.github.unidbg.Module;
+import com.github.unidbg.hook.BaseHook;
 import com.github.unidbg.memory.Memory;
+import com.github.unidbg.memory.MemoryMap;
 import com.sun.jna.NativeLong;
 import com.sun.jna.Pointer;
 import com.sun.jna.WString;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import unicorn.Unicorn;
+import unicorn.UnicornConst;
 
 import java.io.ByteArrayOutputStream;
 import java.io.UnsupportedEncodingException;
@@ -21,7 +24,7 @@ public class UnicornPointer extends Pointer {
 
     private static final Log log = LogFactory.getLog(UnicornPointer.class);
 
-    private final Emulator emulator;
+    private final Emulator<?> emulator;
     private final Unicorn unicorn;
     public final long peer;
     private final int pointerSize;
@@ -30,7 +33,7 @@ public class UnicornPointer extends Pointer {
         return peer & 0xffffffffL;
     }
 
-    private UnicornPointer(Emulator emulator, long peer, int pointerSize) {
+    private UnicornPointer(Emulator<?> emulator, long peer, int pointerSize) {
         super(0);
 
         this.emulator = emulator;
@@ -53,15 +56,15 @@ public class UnicornPointer extends Pointer {
         return size;
     }
 
-    public static UnicornPointer pointer(Emulator emulator, long addr) {
+    public static UnicornPointer pointer(Emulator<?> emulator, long addr) {
         return addr == 0 ? null : new UnicornPointer(emulator, addr, emulator.getPointerSize());
     }
 
-    public static UnicornPointer pointer(Emulator emulator, Number number) {
-        return pointer(emulator, emulator.getPointerSize() == 4 ? number.intValue() & 0xffffffffL : number.longValue());
+    public static UnicornPointer pointer(Emulator<?> emulator, Number number) {
+        return pointer(emulator, BaseHook.numberToAddress(emulator, number));
     }
 
-    public static UnicornPointer register(Emulator emulator, int reg) {
+    public static UnicornPointer register(Emulator<?> emulator, int reg) {
         return pointer(emulator, (Number) emulator.getUnicorn().reg_read(reg));
     }
 
@@ -159,7 +162,9 @@ public class UnicornPointer extends Pointer {
 
     @Override
     public void write(long offset, long[] buf, int index, int length) {
-        throw new AbstractMethodError();
+        for (int i = index; i < length; i++) {
+            setLong((i - index) * 8 + offset, buf[i]);
+        }
     }
 
     @Override
@@ -397,7 +402,7 @@ public class UnicornPointer extends Pointer {
         UnicornPointer pointer = new UnicornPointer(emulator, peer + offset, pointerSize);
         if (size > 0) {
             if (offset > size) {
-                throw new InvalidMemoryAccessException();
+                throw new InvalidMemoryAccessException("offset=" + offset + ", size=" + size);
             }
 
             long newSize = size - offset;
@@ -412,7 +417,35 @@ public class UnicornPointer extends Pointer {
     public String toString() {
         Memory memory = emulator == null ? null : emulator.getMemory();
         Module module = memory == null ? null : memory.findModuleByAddress(peer);
-        return "unicorn@0x" + Long.toHexString(peer) + (module == null ? "" : ("[" + module.name + "]0x" + Long.toHexString(peer - module.base)));
+        MemoryMap memoryMap = null;
+        if (memory != null) {
+            for (MemoryMap mm : memory.getMemoryMap()) {
+                if (peer >= mm.base && peer < mm.base + mm.size) {
+                    memoryMap = mm;
+                    break;
+                }
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        if (memoryMap == null) {
+            sb.append("unicorn");
+        } else {
+            if ((memoryMap.prot & UnicornConst.UC_PROT_READ) != 0) {
+                sb.append('R');
+            }
+            if ((memoryMap.prot & UnicornConst.UC_PROT_WRITE) != 0) {
+                sb.append('W');
+            }
+            if ((memoryMap.prot & UnicornConst.UC_PROT_EXEC) != 0) {
+                sb.append('X');
+            }
+        }
+        sb.append("@0x");
+        sb.append(Long.toHexString(peer));
+        if (module != null) {
+            sb.append("[").append(module.name).append("]0x").append(Long.toHexString(peer - module.base));
+        }
+        return sb.toString();
     }
 
     @Override

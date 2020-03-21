@@ -1,9 +1,9 @@
 package com.github.unidbg.debugger;
 
 import com.github.unidbg.Emulator;
-import com.github.unidbg.Module;
 import com.github.unidbg.arm.AbstractARMDebugger;
 import com.github.unidbg.utils.Inspector;
+import keystone.Keystone;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -15,7 +15,9 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
-import java.util.*;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.concurrent.Semaphore;
 
 public abstract class AbstractDebugServer extends AbstractARMDebugger implements DebugServer {
@@ -24,13 +26,13 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
 
     private final List<ByteBuffer> pendingWrites;
 
-    public AbstractDebugServer(Emulator emulator) {
-        super(emulator, false);
+    public AbstractDebugServer(Emulator<?> emulator) {
+        super(emulator);
 
         pendingWrites = new LinkedList<>();
         input = ByteBuffer.allocate(PACKET_SIZE);
 
-        singleStep = 1; // break at attach
+        setSingleStep(1); // break at attach
 
         Thread thread = new Thread(this, "dbgserver");
         thread.start();
@@ -72,17 +74,8 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
         serverShutdown = false;
         serverRunning = true;
 
-        System.err.println("Start debugger server successfully on port: " + DEFAULT_PORT);
-        List<Module> loaded = new ArrayList<>(emulator.getMemory().getLoadedModules());
-        Collections.sort(loaded, new Comparator<Module>() {
-            @Override
-            public int compare(Module o1, Module o2) {
-                return (int) (o1.base - o2.base);
-            }
-        });
-        for (Module module : loaded) {
-            System.err.println("[0x" + Long.toHexString(module.base) + "]" + module.name);
-        }
+        System.err.println("Start " + this + " server on port: " + DEFAULT_PORT);
+        onServerStart();
 
         while(serverRunning) {
             try {
@@ -122,6 +115,8 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
         selector = null;
         closeSocketChannel();
     }
+
+    protected abstract void onServerStart();
 
     protected abstract void processInput(ByteBuffer input);
 
@@ -226,14 +221,14 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
     private Semaphore semaphore;
 
     @Override
-    protected final void loop(Emulator emulator, long address, int size) throws Exception {
+    protected final void loop(Emulator<?> emulator, long address, int size) throws Exception {
         semaphore = new Semaphore(0);
 
         onHitBreakPoint(emulator, address);
         semaphore.acquire();
     }
 
-    protected abstract void onHitBreakPoint(Emulator emulator, long address);
+    protected abstract void onHitBreakPoint(Emulator<?> emulator, long address);
 
     public final void resumeRun() {
         if (semaphore != null) {
@@ -242,7 +237,7 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
     }
 
     public final void singleStep() {
-        singleStep = 1;
+        setSingleStep(1);
         resumeRun();
     }
 
@@ -250,11 +245,12 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
     public final void close() {
         super.close();
 
-        onDebuggerExit();
-        shutdownServer();
+        if (onDebuggerExit()) {
+            shutdownServer();
+        }
     }
 
-    protected abstract void onDebuggerExit();
+    protected abstract boolean onDebuggerExit();
 
     public final void shutdownServer() {
         serverShutdown = true;
@@ -268,8 +264,7 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
     }
 
     @Override
-    protected final byte[] addSoftBreakPoint(long address, int svcNumber) {
+    protected Keystone createKeystone(boolean isThumb) {
         throw new UnsupportedOperationException();
     }
-
 }

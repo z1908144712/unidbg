@@ -518,6 +518,34 @@ BOOL isSystemClass(Class clazz) {
     return nil;
 }
 
++(void) search_class: (const char *) keywords {
+    int classCount = objc_getClassList(NULL, 0);
+
+	if(classCount < 1) {
+	    NSLog(@"Empty objc class.");
+		return;
+	}
+	if(keywords == NULL || strlen(keywords) == 0) {
+	    NSLog(@"Search failed: %s", keywords);
+	    return;
+	}
+
+	__unsafe_unretained Class *classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * classCount);
+	objc_getClassList(classes, classCount);
+
+	int count = 0;
+	for(int i = 0; i < classCount; i++) {
+	    const char *className = class_getName(classes[i]);
+	    if(strstr(className, keywords)) {
+	        NSLog(@"Found class: %s", className);
+	        count++;
+	    }
+	}
+
+	free(classes);
+	NSLog(@"Search class matches count: %d", count);
+}
+
 +(NSString *) class_dump_all_classes: (BOOL) includeSystemClasses {
 	NSMutableString *result = [NSMutableString new];
 	
@@ -529,7 +557,7 @@ BOOL isSystemClass(Class clazz) {
 	
 	__unsafe_unretained Class *classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * classCount);
 	objc_getClassList(classes, classCount);
-	
+
 	for(int i = 0; i < classCount; i++) {
 		if(includeSystemClasses || !isSystemClass(classes[i])) {
 			[result appendString:[ClassDump class_dump_class: classes[i]]];
@@ -543,26 +571,3 @@ BOOL isSystemClass(Class clazz) {
 }
 
 @end
-
-size_t dumpClass(const char *name, char *buf, size_t buf_size) {
-    NSString *str = [ClassDump my_dump_class: name];
-    if(str) {
-        if(!buf) {
-            snprintf(buf, buf_size, "dump class failed: buf is null\n");
-            return 0;
-        }
-
-        const char *utf8 = [str UTF8String];
-        size_t length = strlen(utf8);
-        if(length > buf_size) {
-            snprintf(buf, buf_size, "dump class failed: buffer overflow %lu > %lu.\n", length, buf_size);
-            return 0;
-        } else {
-            memcpy(buf, utf8, length);
-            return length;
-        }
-    } else {
-        snprintf(buf, buf_size, "dump class failed: %s NOT found.\n", name);
-        return 0;
-    }
-}

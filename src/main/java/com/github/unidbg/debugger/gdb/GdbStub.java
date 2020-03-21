@@ -1,6 +1,7 @@
 package com.github.unidbg.debugger.gdb;
 
 import com.github.unidbg.Emulator;
+import com.github.unidbg.Module;
 import com.github.unidbg.debugger.AbstractDebugServer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -8,8 +9,7 @@ import unicorn.Arm64Const;
 import unicorn.ArmConst;
 
 import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * GdbStub class
@@ -27,12 +27,12 @@ public final class GdbStub extends AbstractDebugServer {
     private final StringBuilder currentInputPacket;
     private int packetChecksum, packetFinished;
 
-    public GdbStub(Emulator emulator) {
+    public GdbStub(Emulator<?> emulator) {
         super(emulator);
 
         currentInputPacket = new StringBuilder();
 
-        if (emulator.getPointerSize() == 4) { // arm32
+        if (emulator.is32Bit()) { // arm32
             registers = new int[] {
                     ArmConst.UC_ARM_REG_R0,
                     ArmConst.UC_ARM_REG_R1,
@@ -62,6 +62,20 @@ public final class GdbStub extends AbstractDebugServer {
             registers[31] = Arm64Const.UC_ARM64_REG_SP;
             registers[32] = Arm64Const.UC_ARM64_REG_PC;
             registers[33] = Arm64Const.UC_ARM64_REG_NZCV;
+        }
+    }
+
+    @Override
+    protected void onServerStart() {
+        List<Module> loaded = new ArrayList<>(emulator.getMemory().getLoadedModules());
+        Collections.sort(loaded, new Comparator<Module>() {
+            @Override
+            public int compare(Module o1, Module o2) {
+                return (int) (o1.base - o2.base);
+            }
+        });
+        for (Module module : loaded) {
+            System.err.println("[0x" + Long.toHexString(module.base) + "]" + module.name);
         }
     }
 
@@ -121,7 +135,7 @@ public final class GdbStub extends AbstractDebugServer {
                     case '+': // Silently discard '+' packets
                         break;
                     case 0x3: // Ctrl-C requests
-                        singleStep = 1;
+                        setSingleStep(1);
                         break;
                     case '$':
                         currentInputPacket.append(c);
@@ -168,7 +182,9 @@ public final class GdbStub extends AbstractDebugServer {
             int checksum = Integer.parseInt(currentInputPacket.substring(currentInputPacket.length() - 2), 16);
             return checksum == (packetChecksum & 0xff);
         } catch(NumberFormatException ex) {
-            log.debug("checkPacket currentInputPacket=" + currentInputPacket, ex);
+            if (log.isDebugEnabled()) {
+                log.debug("checkPacket currentInputPacket=" + currentInputPacket, ex);
+            }
             return false;
         }
     }
@@ -192,15 +208,16 @@ public final class GdbStub extends AbstractDebugServer {
     }
 
     @Override
-    protected void onHitBreakPoint(Emulator emulator, long address) {
+    protected void onHitBreakPoint(Emulator<?> emulator, long address) {
         if (isDebuggerConnected()) {
             makePacketAndSend("S" + SIGTRAP);
         }
     }
 
     @Override
-    protected void onDebuggerExit() {
+    protected boolean onDebuggerExit() {
         makePacketAndSend("W00");
+        return true;
     }
 
     @Override
@@ -253,5 +270,10 @@ public final class GdbStub extends AbstractDebugServer {
 
         GdbStubCommand commandVCont = new ExtendedCommand();
         commands.put("vCont", commandVCont);
+    }
+
+    @Override
+    public String toString() {
+        return "gdb";
     }
 }

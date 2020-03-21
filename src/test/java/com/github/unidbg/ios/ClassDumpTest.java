@@ -2,19 +2,21 @@ package com.github.unidbg.ios;
 
 import com.github.unidbg.Emulator;
 import com.github.unidbg.LibraryResolver;
-import com.github.unidbg.Module;
-import com.github.unidbg.Symbol;
 import com.github.unidbg.android.EmulatorTest;
 import com.github.unidbg.arm.HookStatus;
-import com.github.unidbg.arm.context.RegisterContext;
+import com.github.unidbg.hook.HookContext;
 import com.github.unidbg.hook.ReplaceCallback;
 import com.github.unidbg.hook.substrate.ISubstrate;
 import com.github.unidbg.ios.classdump.ClassDumper;
 import com.github.unidbg.ios.classdump.IClassDumper;
-import com.github.unidbg.pointer.UnicornPointer;
+import com.github.unidbg.ios.objc.ObjC;
+import com.github.unidbg.ios.struct.objc.ObjcClass;
+import com.github.unidbg.ios.struct.objc.ObjcObject;
 import com.sun.jna.Pointer;
 
-public class ClassDumpTest extends EmulatorTest {
+import java.io.File;
+
+public class ClassDumpTest extends EmulatorTest<DarwinARMEmulator> {
 
     @Override
     protected LibraryResolver createLibraryResolver() {
@@ -22,50 +24,62 @@ public class ClassDumpTest extends EmulatorTest {
     }
 
     @Override
-    protected Emulator createARMEmulator() {
-        return new DarwinARMEmulator();
+    protected DarwinARMEmulator createARMEmulator() {
+        return new DarwinARMEmulator(new File("target/rootfs/classdump"));
     }
 
-    public void testClassDump() throws Exception {
+    public void testIgnore() {
+    }
+
+    private void processClassDump() {
         MachOLoader loader = (MachOLoader) emulator.getMemory();
         loader.setCallInitFunction();
         loader.setObjcRuntime(true);
         IClassDumper classDumper = ClassDumper.getInstance(emulator);
-
         ISubstrate substrate = Substrate.getInstance(emulator);
 
-        Module main = loader.getExecutableModule();
-        Symbol _objc_getMetaClass = main.findSymbolByName("_objc_getMetaClass");
-        assertNotNull(_objc_getMetaClass);
-        Number ClassDump = _objc_getMetaClass.call(emulator, "ClassDump")[0];
-        assertTrue(ClassDump.intValue() != 0);
-
-        Symbol _sel_registerName = main.findSymbolByName("_sel_registerName");
-        assertNotNull(_sel_registerName);
-        Number my_dump_class = _sel_registerName.call(emulator, "my_dump_class:")[0];
-        assertTrue(my_dump_class.intValue() != 0);
-
-        substrate.hookMessageEx(UnicornPointer.pointer(emulator, ClassDump), UnicornPointer.pointer(emulator, my_dump_class), new ReplaceCallback() {
+        ObjC objc = ObjC.getInstance(emulator);
+        ObjcClass oClassDump = objc.getClass("ClassDump");
+        assertNotNull(oClassDump);
+        substrate.hookMessageEx(oClassDump.getMeta(), objc.registerName("my_dump_class:"), new ReplaceCallback() {
             @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
-                RegisterContext context = emulator.getContext();
+            public HookStatus onCall(Emulator<?> emulator, HookContext context, long originFunction) {
                 Pointer id = context.getPointerArg(0);
                 Pointer SEL = context.getPointerArg(1);
                 Pointer name = context.getPointerArg(2);
-                System.err.println("my_dump_class id=" + id + ", SEL=" + SEL + ", name=" + name.getString(0));
+                String className = name.getString(0);
+                context.push(className);
+                if (!"NSLocale".equals(className)) {
+                    return HookStatus.RET(emulator, originFunction);
+                }
+
+                ObjcObject obj = ObjcObject.create(emulator, id);
+                System.err.println("my_dump_class id=" + id + ", SEL=" + SEL + ", name=" + className + ", className=" + obj.getObjClass().getName());
                 name.setString(0, "NSDate");
                 return HookStatus.RET(emulator, originFunction);
             }
-        });
+            @Override
+            public void postCall(Emulator<?> emulator, HookContext context) {
+                System.err.println("postCall className=" + context.pop());
+            }
+        }, true);
 
         String objcClass = classDumper.dumpClass("NSLocale");
         System.out.println(objcClass);
+
+        assertTrue(oClassDump.getMeta().isMetaClass());
+        System.out.println("className=" + oClassDump.getName() + ", metaClassName=" + oClassDump.getMeta().getName());
+
+        ObjcObject str = oClassDump.callObjc("my_dump_class:", "NSDictionary");
+        System.out.println(str.getDescription());
+
+        classDumper.searchClass("ClassD");
     }
 
     public static void main(String[] args) throws Exception {
         ClassDumpTest test = new ClassDumpTest();
         test.setUp();
-        test.testClassDump();
+        test.processClassDump();
         test.tearDown();
     }
 

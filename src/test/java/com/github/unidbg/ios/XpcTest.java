@@ -16,7 +16,7 @@ import com.sun.jna.Pointer;
 
 import java.io.File;
 
-public class XpcTest extends EmulatorTest {
+public class XpcTest extends EmulatorTest<DarwinARMEmulator> {
 
     @Override
     protected LibraryResolver createLibraryResolver() {
@@ -24,11 +24,11 @@ public class XpcTest extends EmulatorTest {
     }
 
     @Override
-    protected Emulator createARMEmulator() {
+    protected DarwinARMEmulator createARMEmulator() {
         return new DarwinARMEmulator();
     }
 
-    public void testXpcNoPie() throws Exception {
+    private void processXpcNoPie() throws Exception {
         emulator.getMemory().setCallInitFunction();
         Module module = emulator.loadLibrary(new File("src/test/resources/example_binaries/xpcNP"));
 
@@ -45,7 +45,11 @@ public class XpcTest extends EmulatorTest {
         Inspector.inspect(block.getPointer().getByteArray(0, 32), "snprintf");
     }
 
-    public void testXpc() throws Exception {
+    public void testIgnore() {
+    }
+
+    @SuppressWarnings("unused")
+    private void processXpc() throws Exception {
 //        emulator.attach().addBreakPoint(null, 0x403b7dfc);
 //        emulator.traceCode();
         emulator.getMemory().setCallInitFunction();
@@ -83,7 +87,7 @@ public class XpcTest extends EmulatorTest {
         assertNotNull(_MSFindSymbol);
         substrate.hookFunction(_MSFindSymbol, new ReplaceCallback() {
             @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
+            public HookStatus onCall(Emulator<?> emulator, long originFunction) {
                 RegisterContext context = emulator.getContext();
                 long image = context.getLongArg(0);
                 Pointer symbol = context.getPointerArg(1);
@@ -98,7 +102,7 @@ public class XpcTest extends EmulatorTest {
     public static void main(String[] args) throws Exception {
         XpcTest test = new XpcTest();
         test.setUp();
-        test.testXpc();
+        test.processXpcNoPie();
         test.tearDown();
     }
 

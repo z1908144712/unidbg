@@ -1,10 +1,10 @@
 package com.github.unidbg.linux.file;
 
 import com.github.unidbg.Emulator;
-import com.github.unidbg.file.AbstractFileIO;
 import com.github.unidbg.file.FileIO;
-import com.github.unidbg.file.StatStructure;
-import com.github.unidbg.pointer.UnicornPointer;
+import com.github.unidbg.file.NewFileIO;
+import com.github.unidbg.file.linux.BaseAndroidFileIO;
+import com.github.unidbg.file.linux.StatStructure;
 import com.github.unidbg.unix.IO;
 import com.github.unidbg.utils.Inspector;
 import com.sun.jna.Pointer;
@@ -15,14 +15,16 @@ import org.apache.commons.logging.LogFactory;
 import unicorn.Unicorn;
 
 import java.io.*;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.util.Arrays;
 
-public class SimpleFileIO extends AbstractFileIO implements FileIO {
+public class SimpleFileIO extends BaseAndroidFileIO implements NewFileIO {
 
     private static final Log log = LogFactory.getLog(SimpleFileIO.class);
 
-    final File file;
-    final String path;
+    protected final File file;
+    protected final String path;
     private final RandomAccessFile randomAccessFile;
 
     public SimpleFileIO(int oflags, File file, String path) {
@@ -43,7 +45,7 @@ public class SimpleFileIO extends AbstractFileIO implements FileIO {
             randomAccessFile = new RandomAccessFile(file, "rws");
             onCreate(randomAccessFile);
         } catch (IOException e) {
-            throw new IllegalStateException(e);
+            throw new IllegalStateException("process file failed: " + file.getAbsolutePath(), e);
         }
     }
 
@@ -147,28 +149,25 @@ public class SimpleFileIO extends AbstractFileIO implements FileIO {
     }
 
     @Override
-    public int fstat(Emulator emulator, Unicorn unicorn, Pointer stat) {
+    public int fstat(Emulator<?> emulator, StatStructure stat) {
         int st_mode;
         if (IO.STDOUT.equals(file.getName())) {
             st_mode = IO.S_IFCHR | 0x777;
+        } else if(Files.isSymbolicLink(file.toPath())) {
+            st_mode = IO.S_IFLNK;
         } else {
             st_mode = IO.S_IFREG;
         }
-        /*
-         * 0x00: st_dev
-         * 0x18: st_uid
-         * 0x1c: st_gid
-         * 0x30: st_size
-         * 0x38: st_blksize
-         * 0x60: st_ino
-         */
-        stat.setLong(0x0, 0); // st_dev
-        stat.setInt(0x10, st_mode); // st_mode
-        stat.setInt(0x18, 0); // st_uid
-        stat.setInt(0x1c, 0); // st_gid
-        stat.setLong(0x30, file.length()); // st_size
-        stat.setInt(0x38, emulator.getPageAlign()); // st_blksize
-        stat.setLong(0x60, 0); // st_ino
+        stat.st_dev = 1;
+        stat.st_mode = st_mode;
+        stat.st_uid = 0;
+        stat.st_gid = 0;
+        stat.st_size = file.length();
+        stat.st_blksize = emulator.getPageAlign();
+        stat.st_ino = 1;
+        stat.st_blocks = ((file.length() + emulator.getPageAlign() - 1) / emulator.getPageAlign());
+        stat.setLastModification(file.lastModified());
+        stat.pack();
         return 0;
     }
 
@@ -203,7 +202,7 @@ public class SimpleFileIO extends AbstractFileIO implements FileIO {
     }
 
     @Override
-    public int ioctl(Emulator emulator, long request, long argp) {
+    public int ioctl(Emulator<?> emulator, long request, long argp) {
         if (IO.STDOUT.equals(path) || IO.STDERR.equals(path)) {
             return 0;
         }
@@ -242,9 +241,8 @@ public class SimpleFileIO extends AbstractFileIO implements FileIO {
     }
 
     @Override
-    public int llseek(long offset_high, long offset_low, Pointer result, int whence) {
+    public int llseek(long offset, Pointer result, int whence) {
         try {
-            long offset = (offset_high<<32) | offset_low;
             switch (whence) {
                 case SEEK_SET:
                     randomAccessFile.seek(offset);
@@ -259,18 +257,18 @@ public class SimpleFileIO extends AbstractFileIO implements FileIO {
             throw new IllegalStateException(e);
         }
 
-        return super.llseek(offset_high, offset_low, result, whence);
+        return super.llseek(offset, result, whence);
     }
 
     @Override
-    public int fstat(Emulator emulator, StatStructure stat) {
-        stat.st_dev = 1;
-        stat.st_mode = (short) (IO.S_IFREG | 0x777);
-        stat.st_size = UnicornPointer.pointer(emulator, file.length());
-        stat.st_blocks = UnicornPointer.pointer(emulator, file.length());
-        stat.st_blksize = 0;
-        stat.st_ino = UnicornPointer.pointer(emulator, 1);
-        stat.pack();
-        return 0;
+    public int ftruncate(int length) {
+        try (FileChannel channel = new FileOutputStream(file, true).getChannel()) {
+            channel.truncate(length);
+            return 0;
+        } catch (IOException e) {
+            log.debug("ftruncate failed", e);
+            return -1;
+        }
     }
+
 }

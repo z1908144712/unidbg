@@ -1,19 +1,22 @@
 package com.github.unidbg.unix;
 
-import com.github.unidbg.Emulator;
+public interface UnixEmulator {
 
-public interface UnixEmulator extends Emulator {
-
-    int EPERM = 1;
-    int EBADF = 9;
-    int EAGAIN = 11;
-    int ENOMEM = 12;
-    int EACCES = 13;
-    int EFAULT = 14;
-    int EINVAL = 22;
-    int ENOTTY = 25;
-    int ENOSYS = 38;
-    int EAFNOSUPPORT = 97;
-    int ECONNREFUSED = 111;
+    int EPERM = 1; /* Operation not permitted */
+    int ENOENT = 2; /* No such file or directory */
+    int EBADF = 9; /* Bad file descriptor */
+    int EAGAIN = 11; /* Resource temporarily unavailable */
+    int ENOMEM = 12; /* Cannot allocate memory */
+    int EACCES = 13; /* Permission denied */
+    int EFAULT = 14; /* Bad address */
+    int EEXIST = 17; /* File exists */
+    int ENOTDIR = 20; /* Not a directory */
+    int EINVAL = 22; /* Invalid argument */
+    int ENOTTY = 25; /* Inappropriate ioctl for device */
+    int ENOSYS = 38; /* Function not implemented */
+    int EOPNOTSUPP = 95; /* Operation not supported on transport endpoint */
+    int EAFNOSUPPORT = 97; /* Address family not supported by protocol family */
+    int EADDRINUSE = 98; /* Address already in use */
+    int ECONNREFUSED = 111; /* Connection refused */
 
 }

@@ -1,29 +1,16 @@
 package com.github.unidbg.file;
 
 import com.github.unidbg.Emulator;
-import com.github.unidbg.ios.struct.kernel.StatFS;
-import com.github.unidbg.memory.MemoryMap;
 import com.sun.jna.Pointer;
 import unicorn.Unicorn;
 
 import java.io.IOException;
-import java.util.Map;
 
 public interface FileIO {
-
-    int O_RDONLY = 0;
-    int O_WRONLY = 1;
-    int O_RDWR = 2;
-    int O_CREAT = 0x40;
-    int O_APPEND = 0x400;
-    int O_NONBLOCK = 0x800;
-    int O_NOFOLLOW = 0x20000;
 
     int SEEK_SET = 0;
     int SEEK_CUR = 1;
     int SEEK_END = 2;
-
-    int SIOCGIFCONF = 0x8912;
 
     void close();
 
@@ -31,16 +18,17 @@ public interface FileIO {
 
     int read(Unicorn unicorn, Pointer buffer, int count);
 
-    int fstat(Emulator emulator, Unicorn unicorn, Pointer stat);
-    int fstat(Emulator emulator, StatStructure stat);
+    int fcntl(Emulator<?> emulator, int cmd, long arg);
 
-    int fcntl(int cmd, long arg);
-
-    int ioctl(Emulator emulator, long request, long argp);
+    int ioctl(Emulator<?> emulator, long request, long argp);
 
     FileIO dup2();
 
     int connect(Pointer addr, int addrlen);
+
+    int bind(Pointer addr, int addrlen);
+
+    int listen(int backlog);
 
     int setsockopt(int level, int optname, Pointer optval, int optlen);
 
@@ -58,15 +46,11 @@ public interface FileIO {
 
     int getsockname(Pointer addr, Pointer addrlen);
 
-    long mmap2(Unicorn unicorn, long addr, int aligned, int prot, int offset, int length, Map<Long, MemoryMap> memoryMap) throws IOException;
+    long mmap2(Unicorn unicorn, long addr, int aligned, int prot, int offset, int length) throws IOException;
 
-    int llseek(long offset_high, long offset_low, Pointer result, int whence);
-
-    int getdents64(Pointer dirp, int count);
+    int llseek(long offset, Pointer result, int whence);
 
     int recvfrom(Unicorn unicorn, Pointer buf, int len, int flags, Pointer src_addr, Pointer addrlen);
-
-    int fstatfs(StatFS statFS);
 
     String getPath();
 }

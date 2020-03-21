@@ -21,6 +21,7 @@ public class MapsFileIO extends ByteArrayFileIO implements FileIO {
         super(oflags, path, getMapsData(modules, null));
     }
 
+    @SuppressWarnings("unused")
     protected MapsFileIO(int oflags, String path, Collection<Module> modules, String additionContent) {
         super(oflags, path, getMapsData(modules, additionContent));
     }
@@ -61,7 +62,6 @@ public class MapsFileIO extends ByteArrayFileIO implements FileIO {
         if (additionContent != null) {
             builder.append(additionContent).append('\n');
         }
-        builder.append("ffff0000-ffff1000 r-xp 00000000 00:00 0          [vectors]");
         if (log.isDebugEnabled()) {
             log.debug("\n" + builder.toString());
         }
@@ -70,7 +70,7 @@ public class MapsFileIO extends ByteArrayFileIO implements FileIO {
     }
 
     @Override
-    public int ioctl(Emulator emulator, long request, long argp) {
+    public int ioctl(Emulator<?> emulator, long request, long argp) {
         return 0;
     }
 }

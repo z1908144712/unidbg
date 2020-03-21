@@ -15,7 +15,7 @@ public class XHookImpl extends BaseHook implements IxHook {
 
     private static final Log log = LogFactory.getLog(XHookImpl.class);
 
-    public static IxHook getInstance(Emulator emulator) {
+    public static IxHook getInstance(Emulator<?> emulator) {
         IxHook ixHook = emulator.get(XHookImpl.class.getName());
         if (ixHook == null) {
             try {
@@ -31,12 +31,14 @@ public class XHookImpl extends BaseHook implements IxHook {
     private final Symbol xhook_register;
     private final Symbol xhook_refresh;
 
-    private XHookImpl(Emulator emulator) throws IOException {
+    private XHookImpl(Emulator<?> emulator) throws IOException {
         super(emulator, "libxhook");
 
         xhook_register = module.findSymbolByName("xhook_register", false);
         xhook_refresh = module.findSymbolByName("xhook_refresh", false);
-        log.debug("xhook_register=" + xhook_register + ", xhook_refresh=" + xhook_refresh);
+        if (log.isDebugEnabled()) {
+            log.debug("xhook_register=" + xhook_register + ", xhook_refresh=" + xhook_refresh);
+        }
 
         if (xhook_register == null) {
             throw new IllegalStateException("xhook_register is null");
@@ -62,8 +64,13 @@ public class XHookImpl extends BaseHook implements IxHook {
 
     @Override
     public void register(String pathname_regex_str, String symbol, final ReplaceCallback callback) {
+        register(pathname_regex_str, symbol, callback, false);
+    }
+
+    @Override
+    public void register(String pathname_regex_str, String symbol, ReplaceCallback callback, boolean enablePostCall) {
         final Pointer old_func = emulator.getMemory().malloc(emulator.getPointerSize(), false).getPointer();
-        Pointer new_func = createReplacePointer(callback, old_func);
+        Pointer new_func = createReplacePointer(callback, old_func, enablePostCall);
         int ret = xhook_register.call(emulator, pathname_regex_str, symbol, new_func, old_func)[0].intValue();
         if (ret != RET_SUCCESS) {
             throw new IllegalStateException("ret=" + ret);

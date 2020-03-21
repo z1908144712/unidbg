@@ -25,14 +25,13 @@ public class CrackMe {
         new CrackMe().crack();
     }
 
-    private final Emulator emulator;
+    private final Emulator<?> emulator;
     private final Module module;
     private final File executable;
 
     public CrackMe() throws IOException {
         executable = new File("src/test/resources/example_binaries/crackme1");
-        emulator = new AndroidARMEmulator(executable.getName());
-        emulator.setWorkDir(executable.getParentFile());
+        emulator = new AndroidARMEmulator(executable.getName(), new File("target/rootfs"));
         Memory memory = emulator.getMemory();
         LibraryResolver resolver = new AndroidResolver(19);
         memory.setLibraryResolver(resolver);
@@ -48,7 +47,7 @@ public class CrackMe {
         IxHook ixHook = XHookImpl.getInstance(emulator);
         ixHook.register(executable.getName(), "strlen", new ReplaceCallback() {
             @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
+            public HookStatus onCall(Emulator<?> emulator, long originFunction) {
                 String str = emulator.getContext().getPointerArg(0).getString(0);
                 System.err.println(String.format("strlen[\"%s\"] called from %s", str, UnicornPointer.register(emulator, ArmConst.UC_ARM_REG_LR)));
                 return HookStatus.RET(emulator, originFunction);
@@ -56,7 +55,7 @@ public class CrackMe {
         });
         ixHook.register(executable.getName(), "puts", new ReplaceCallback() {
             @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
+            public HookStatus onCall(Emulator<?> emulator, long originFunction) {
                 String str = emulator.getContext().getPointerArg(0).getString(0);
                 System.err.println(String.format("puts[\"%s\"] called from %s", str, UnicornPointer.register(emulator, ArmConst.UC_ARM_REG_LR)));
                 if (str.startsWith("yes")) {
@@ -67,7 +66,7 @@ public class CrackMe {
         });
         ixHook.register(executable.getName(), "memcpy", new ReplaceCallback() {
             @Override
-            public HookStatus onCall(Emulator emulator, long originFunction) {
+            public HookStatus onCall(Emulator<?> emulator, long originFunction) {
                 RegisterContext context = emulator.getContext();
                 Pointer dest = context.getPointerArg(0);
                 Pointer src = context.getPointerArg(1);

@@ -37,6 +37,15 @@ public class DvmClass extends DvmObject<String> implements Hashable {
         return obj;
     }
 
+    DvmObject<?> allocObject() {
+        String signature = this.getClassName() + "->allocObject";
+        if (log.isDebugEnabled()) {
+            log.debug("allocObject signature=" + signature);
+        }
+        BaseVM vm = this.vm;
+        return vm.jni.allocObject(vm, this, signature);
+    }
+
     private final Map<Long, DvmMethod> staticMethodMap = new HashMap<>();
 
     final DvmMethod getStaticMethod(long hash) {
@@ -116,7 +125,7 @@ public class DvmClass extends DvmObject<String> implements Hashable {
         if (log.isDebugEnabled()) {
             log.debug("getFieldID signature=" + signature + ", hash=0x" + Long.toHexString(hash));
         }
-        if (vm.jni.acceptField(signature, false)) {
+        if (vm.jni != null && vm.jni.acceptField(signature, false)) {
             fieldMap.put(hash, new DvmField(this, fieldName, fieldType));
             return (int) hash;
         } else {
@@ -173,7 +182,7 @@ public class DvmClass extends DvmObject<String> implements Hashable {
 
     final Map<String, UnicornPointer> nativesMap = new HashMap<>();
 
-    UnicornPointer findNativeFunction(Emulator emulator, String method) {
+    UnicornPointer findNativeFunction(Emulator<?> emulator, String method) {
         UnicornPointer fnPtr = nativesMap.get(method);
         int index = method.indexOf('(');
         if (fnPtr == null && index != -1) {
@@ -195,7 +204,7 @@ public class DvmClass extends DvmObject<String> implements Hashable {
         return fnPtr;
     }
 
-    public Number callStaticJniMethod(Emulator emulator, String method, Object...args) {
+    public Number callStaticJniMethod(Emulator<?> emulator, String method, Object...args) {
         UnicornPointer fnPtr = findNativeFunction(emulator, method);
         List<Object> list = new ArrayList<>(10);
         list.add(vm.getJNIEnv());

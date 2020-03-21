@@ -1,8 +1,10 @@
 package com.github.unidbg.ios;
 
+@SuppressWarnings("unused")
 public interface DarwinSyscall {
 
     int MACH_MSG_SUCCESS = 0x00000000;
+    int MACH_MSG_VM_SPACE = 0x00001000; /* No room in VM address space for out-of-line memory. */
 
     int MACH_SEND_MSG = 0x00000001;
     int MACH_RCV_MSG = 0x00000002;
@@ -16,5 +18,7 @@ public interface DarwinSyscall {
     int HOST_PRIORITY_INFO = 5; /* priority information */
 
     int NOTIFY_STATUS_OK = 0;
+
+    int MAXCOMLEN = 16; /* max command name remembered */
 
 }

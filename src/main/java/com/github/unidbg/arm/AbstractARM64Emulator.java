@@ -2,17 +2,17 @@ package com.github.unidbg.arm;
 
 import capstone.Capstone;
 import com.github.unidbg.AbstractEmulator;
+import com.github.unidbg.Module;
 import com.github.unidbg.arm.context.RegisterContext;
 import com.github.unidbg.arm.context.UnicornArm64RegisterContext;
-import com.github.unidbg.pointer.UnicornPointer;
-import com.github.unidbg.spi.Dlfcn;
-import com.github.unidbg.unix.UnixSyscallHandler;
-import com.github.unidbg.Module;
-import com.github.unidbg.spi.SyscallHandler;
 import com.github.unidbg.debugger.Debugger;
 import com.github.unidbg.file.FileIO;
+import com.github.unidbg.file.NewFileIO;
 import com.github.unidbg.memory.Memory;
-import com.github.unidbg.memory.SvcMemory;
+import com.github.unidbg.pointer.UnicornPointer;
+import com.github.unidbg.spi.Dlfcn;
+import com.github.unidbg.spi.SyscallHandler;
+import com.github.unidbg.unix.UnixSyscallHandler;
 import com.sun.jna.Pointer;
 import keystone.Keystone;
 import keystone.KeystoneArchitecture;
@@ -29,43 +29,42 @@ import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 
-public abstract class AbstractARM64Emulator extends AbstractEmulator implements ARMEmulator {
+public abstract class AbstractARM64Emulator<T extends NewFileIO> extends AbstractEmulator<T> implements ARMEmulator<T> {
 
     private static final Log log = LogFactory.getLog(AbstractARM64Emulator.class);
 
     protected final Memory memory;
-    private final UnixSyscallHandler syscallHandler;
-    private final SvcMemory svcMemory;
+    private final UnixSyscallHandler<T> syscallHandler;
 
     private final Capstone capstoneArm64;
     protected static final long LR = 0xffffff80001f0000L;
 
     private final Dlfcn dlfcn;
 
-    public AbstractARM64Emulator(String processName) {
-        super(UnicornConst.UC_ARCH_ARM64, UnicornConst.UC_MODE_ARM, processName);
+    public AbstractARM64Emulator(String processName, File rootDir, String... envs) {
+        super(UnicornConst.UC_ARCH_ARM64, UnicornConst.UC_MODE_ARM, processName, 0xffffe0000L, 0x10000, rootDir);
 
         Cpsr.getArm64(unicorn).switchUserMode();
 
-        unicorn.hook_add(new EventMemHook() {
+        unicorn.hook_add_new(new EventMemHook() {
             @Override
             public boolean hook(Unicorn u, long address, int size, long value, Object user) {
-                log.debug("memory failed: address=0x" + Long.toHexString(address) + ", size=" + size + ", value=0x" + Long.toHexString(value) + ", user=" + user);
+                log.warn("memory failed: address=0x" + Long.toHexString(address) + ", size=" + size + ", value=0x" + Long.toHexString(value));
                 return false;
             }
         }, UnicornConst.UC_HOOK_MEM_READ_UNMAPPED | UnicornConst.UC_HOOK_MEM_WRITE_UNMAPPED | UnicornConst.UC_HOOK_MEM_FETCH_UNMAPPED, null);
 
-        this.svcMemory = new ARMSvcMemory(unicorn, 0xffffe0000L, 0x10000, this);
         this.syscallHandler = createSyscallHandler(svcMemory);
 
         enableVFP();
-        this.memory = createMemory(syscallHandler);
+        this.memory = createMemory(syscallHandler, envs);
         this.dlfcn = createDyld(svcMemory);
         this.memory.addHookListener(dlfcn);
 
-        unicorn.hook_add(syscallHandler, this);
+        unicorn.hook_add_new(syscallHandler, this);
 
         this.capstoneArm64 = new Capstone(Capstone.CS_ARCH_ARM64, Capstone.CS_MODE_ARM);
+        this.capstoneArm64.setDetail(Capstone.CS_OPT_ON);
     }
 
     @Override
@@ -93,8 +92,8 @@ public abstract class AbstractARM64Emulator extends AbstractEmulator implements 
     }
 
     @Override
-    protected Debugger createDebugger() {
-        return new SimpleARM64Debugger(this, false);
+    protected Debugger createConsoleDebugger() {
+        return new SimpleARM64Debugger(this);
     }
 
     @Override
@@ -116,17 +115,13 @@ public abstract class AbstractARM64Emulator extends AbstractEmulator implements 
         return memory.load(libraryFile, forceCallInit);
     }
 
-    public SvcMemory getSvcMemory() {
-        return svcMemory;
-    }
-
     @Override
     public Memory getMemory() {
         return memory;
     }
 
     @Override
-    public SyscallHandler getSyscallHandler() {
+    public SyscallHandler<T> getSyscallHandler() {
         return syscallHandler;
     }
 
@@ -154,11 +149,11 @@ public abstract class AbstractARM64Emulator extends AbstractEmulator implements 
     }
 
     @Override
-    public Capstone.CsInsn[] disassemble(long address, byte[] code, boolean thumb) {
+    public Capstone.CsInsn[] disassemble(long address, byte[] code, boolean thumb, long count) {
         if (thumb) {
             throw new IllegalStateException();
         }
-        return capstoneArm64.disasm(code, address);
+        return capstoneArm64.disasm(code, address, count);
     }
 
     private void printAssemble(PrintStream out, Capstone.CsInsn[] insns, long address) {
